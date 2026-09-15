@@ -1,0 +1,879 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: inspection
+    description: Authenticated vehicle media inspection operations
+  - name: vehicle-assistant
+    description: Authenticated vehicle maintenance and diagnostics guidance
+  - name: shop
+    description: Authenticated customer and staff work-order operations
+  - name: gallery
+    description: Authenticated gallery media operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /inspection/session:
+    post:
+      operationId: createInspectionSession
+      tags: [inspection]
+      summary: Create a short-lived device inspection session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InspectionSessionRequest"
+      responses:
+        "200":
+          description: Signed inspection session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InspectionSession"
+        "400":
+          description: Invalid device id
+  /inspection/analyze:
+    post:
+      operationId: analyzeInspectionMedia
+      tags: [inspection]
+      summary: Analyze authenticated vehicle inspection media
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InspectionAnalysisRequest"
+      responses:
+        "200":
+          description: Validated vision findings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InspectionAnalysisResponse"
+        "400":
+          description: Invalid inspection payload
+        "401":
+          description: Missing or invalid inspection session
+        "502":
+          description: Vision model failure
+        "503":
+          description: Vision model is not configured
+  /vehicle-chat:
+    post:
+      operationId: answerVehicleQuestion
+      tags: [vehicle-assistant]
+      summary: Answer a vehicle maintenance question using supplied facts and reference ranges
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VehicleChatRequest"
+      responses:
+        "200":
+          description: Vehicle assistant answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VehicleChatResponse"
+        "400":
+          description: Incomplete vehicle assistant request
+        "401":
+          description: Missing or invalid inspection session
+        "502":
+          description: Vehicle assistant failure
+        "503":
+          description: Vehicle assistant is not configured
+  /shop/auth/register:
+    post:
+      operationId: registerShopCustomer
+      tags: [shop]
+      summary: Create a customer shop account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShopRegisterRequest"
+      responses:
+        "201":
+          description: Authenticated customer account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShopAuthResponse"
+        "400":
+          description: Invalid account details
+        "409":
+          description: Email is already registered
+  /shop/auth/sign-in:
+    post:
+      operationId: signInShopCustomer
+      tags: [shop]
+      summary: Sign in to the shop portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShopSignInRequest"
+      responses:
+        "200":
+          description: Authenticated shop account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShopAuthResponse"
+        "400":
+          description: Invalid credentials format
+        "401":
+          description: Email or password is incorrect
+  /shop/dashboard:
+    get:
+      operationId: getShopDashboard
+      tags: [shop]
+      summary: Get the signed-in customer's vehicles and work orders
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Customer-owned shop data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShopDashboard"
+        "401":
+          description: Missing or expired customer session
+  /shop/work-orders/{id}/approve:
+    post:
+      operationId: approveShopWorkOrder
+      tags: [shop]
+      summary: Approve a customer-owned estimate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Updated work order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: "#/components/schemas/ShopWorkOrder"
+        "401":
+          description: Missing or expired customer session
+        "404":
+          description: Work order is not owned by the customer
+  /shop/staff/bootstrap:
+    post:
+      operationId: bootstrapShopStaff
+      tags: [shop]
+      summary: Provision the first staff account with the private workspace invite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShopStaffBootstrapRequest"
+      responses:
+        "201":
+          description: Staff account session
+        "403":
+          description: Invalid staff invite
+  /shop/staff/work-orders/{id}:
+    patch:
+      operationId: updateShopWorkOrder
+      tags: [shop]
+      summary: Update customer-visible work-order progress
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShopWorkOrderUpdate"
+      responses:
+        "200":
+          description: Updated work order
+        "401":
+          description: Missing or invalid staff session
+        "404":
+          description: Work order not found
+  /shop/staff/work-orders:
+    get:
+      operationId: listShopStaffWorkOrders
+      tags: [shop]
+      summary: List work orders available to authenticated staff
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Staff work-order queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrders]
+                properties:
+                  workOrders:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/ShopWorkOrder"
+                        - type: object
+                          required: [customer]
+                          properties:
+                            customer:
+                              allOf:
+                                - $ref: "#/components/schemas/ShopUser"
+                                - type: object
+                                  required: [id, name, email]
+                                  properties:
+                                    role:
+                                      readOnly: true
+        "401":
+          description: Missing or invalid staff session
+  /gallery:
+    get:
+      operationId: listGalleryUploads
+      tags: [gallery]
+      summary: List gallery uploads visible to the signed-in account
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Gallery upload metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GalleryListResponse"
+        "401":
+          description: Missing or expired shop session
+    post:
+      operationId: createGalleryUpload
+      tags: [gallery]
+      summary: Save metadata for an uploaded gallery item
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GalleryCreateRequest"
+      responses:
+        "201":
+          description: Gallery upload metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GalleryUploadResponse"
+        "400":
+          description: Invalid gallery metadata
+        "401":
+          description: Missing or expired shop session
+        "404":
+          description: Uploaded object was not found
+  /gallery/uploads/request-url:
+    post:
+      operationId: requestGalleryUploadUrl
+      tags: [gallery]
+      summary: Request a presigned URL for a gallery file
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GalleryUploadUrlRequest"
+      responses:
+        "200":
+          description: Presigned upload URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GalleryUploadUrlResponse"
+        "400":
+          description: Invalid file metadata
+        "401":
+          description: Missing or expired shop session
+  /gallery/{id}:
+    delete:
+      operationId: deleteGalleryUpload
+      tags: [gallery]
+      summary: Delete a gallery upload owned by the signed-in account
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Gallery upload deleted
+        "401":
+          description: Missing or expired shop session
+        "403":
+          description: Only the upload owner can delete it
+        "404":
+          description: Gallery upload not found
+  /gallery/{id}/media:
+    get:
+      operationId: getGalleryMedia
+      tags: [gallery]
+      summary: Stream gallery media for an authenticated account
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Gallery media bytes
+          content:
+            "*/*":
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Missing or expired shop session
+        "404":
+          description: Gallery media not found
+  /gallery/{id}/thumbnail:
+    get:
+      operationId: getGalleryThumbnail
+      tags: [gallery]
+      summary: Stream a gallery thumbnail for an authenticated account
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Gallery thumbnail bytes
+          content:
+            "*/*":
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Missing or expired shop session
+        "404":
+          description: Gallery thumbnail not found
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    InspectionSessionRequest:
+      type: object
+      properties:
+        deviceId:
+          type: string
+          minLength: 16
+          maxLength: 128
+      required:
+        - deviceId
+    InspectionSession:
+      type: object
+      properties:
+        token:
+          type: string
+        expiresIn:
+          type: integer
+          minimum: 1
+      required:
+        - token
+        - expiresIn
+    InspectionMedia:
+      type: object
+      properties:
+        mimeType:
+          type: string
+          enum: [image/jpeg, image/png, image/webp]
+        data:
+          type: string
+          minLength: 100
+          maxLength: 1600000
+          description: Base64-encoded image bytes. Never log or persist this value.
+      required:
+        - mimeType
+        - data
+    InspectionAnalysisRequest:
+      type: object
+      properties:
+        component:
+          type: string
+          enum: [Engine, Mounts, Leaks, Wiring, Exhaust]
+        mediaKind:
+          type: string
+          enum: [photo, video]
+        vehicle:
+          type: string
+          minLength: 1
+          maxLength: 120
+        media:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            $ref: "#/components/schemas/InspectionMedia"
+      required:
+        - component
+        - mediaKind
+        - vehicle
+        - media
+    InspectionFinding:
+      type: object
+      properties:
+        title:
+          type: string
+        severity:
+          type: string
+          enum: [watch, attention, urgent]
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        detail:
+          type: string
+        evidence:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            type: string
+        recommendation:
+          type: string
+      required:
+        - title
+        - severity
+        - confidence
+        - detail
+        - evidence
+        - recommendation
+    InspectionAnalysisResponse:
+      type: object
+      properties:
+        analysisId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        findings:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/InspectionFinding"
+        summary:
+          type: string
+        model:
+          type: string
+        mediaCount:
+          type: integer
+          minimum: 1
+          maximum: 4
+      required:
+        - analysisId
+        - createdAt
+        - findings
+        - summary
+        - model
+        - mediaCount
+    VehicleFacts:
+      type: object
+      properties:
+        year:
+          type: string
+        make:
+          type: string
+        model:
+          type: string
+        mileage:
+          type: string
+        engine:
+          type: string
+        climate:
+          type: string
+        maintenanceHistory:
+          type: string
+        symptoms:
+          type: string
+        inspectionContext:
+          type: string
+    VehicleChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          minLength: 1
+          maxLength: 4000
+      required:
+        - role
+        - content
+    VehicleChatRequest:
+      type: object
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 1600
+        vehicle:
+          $ref: "#/components/schemas/VehicleFacts"
+        messages:
+          type: array
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/VehicleChatMessage"
+      required:
+        - question
+        - vehicle
+    VehicleChatResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        dataPoints:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+        nextSteps:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+        followUpQuestions:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+        safetyLevel:
+          type: string
+          enum: [routine, attention, urgent]
+        model:
+          type: string
+        dataBasis:
+          type: string
+      required:
+        - answer
+        - dataPoints
+        - nextSteps
+        - followUpQuestions
+        - safetyLevel
+        - model
+        - dataBasis
+    ShopUser:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [customer, staff]
+    ShopVehicle:
+      type: object
+      required: [id, label, plate]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        plate:
+          type: string
+    ShopWorkOrder:
+      type: object
+      required: [id, vehicleId, vehicle, plate, status, updatedAt, service, progress, eta, technician, note, estimate, approved]
+      properties:
+        id:
+          type: string
+        vehicleId:
+          type: string
+          format: uuid
+        vehicle:
+          type: string
+        plate:
+          type: string
+        status:
+          type: string
+          enum: [In progress, Awaiting approval, Ready for pickup]
+        updatedAt:
+          type: string
+          format: date-time
+        service:
+          type: string
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        eta:
+          type: string
+        technician:
+          type: string
+        note:
+          type: string
+        estimate:
+          type: string
+        approved:
+          type: boolean
+    ShopRegisterRequest:
+      type: object
+      required: [name, email, password, vehicle]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        vehicle:
+          type: object
+          required: [label, plate]
+          properties:
+            label:
+              type: string
+            plate:
+              type: string
+    ShopSignInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    ShopAuthResponse:
+      type: object
+      required: [token, user, vehicles, workOrders]
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/ShopUser"
+        vehicles:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShopVehicle"
+        workOrders:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShopWorkOrder"
+    ShopDashboard:
+      type: object
+      required: [user, vehicles, workOrders]
+      properties:
+        user:
+          $ref: "#/components/schemas/ShopUser"
+        vehicles:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShopVehicle"
+        workOrders:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShopWorkOrder"
+    ShopStaffBootstrapRequest:
+      type: object
+      required: [name, email, password, inviteToken]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        inviteToken:
+          type: string
+          writeOnly: true
+    ShopWorkOrderUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        status:
+          type: string
+          enum: [In progress, Awaiting approval, Ready for pickup]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        eta:
+          type: string
+        technician:
+          type: string
+        note:
+          type: string
+        estimate:
+          type: string
+        approved:
+          type: boolean
+    GalleryUploadUrlRequest:
+      type: object
+      required: [name, size, contentType]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        size:
+          type: integer
+          minimum: 1
+        contentType:
+          type: string
+          minLength: 1
+    GalleryUploadUrlResponse:
+      type: object
+      required: [uploadURL, objectPath]
+      properties:
+        uploadURL:
+          type: string
+          format: uri
+        objectPath:
+          type: string
+        metadata:
+          $ref: "#/components/schemas/GalleryUploadUrlRequest"
+    GalleryCreateRequest:
+      type: object
+      required: [objectPath, originalName, title, mediaKind, contentType, size]
+      properties:
+        objectPath:
+          type: string
+        thumbnailPath:
+          type: string
+        originalName:
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+        mediaKind:
+          type: string
+          enum: [photo, video]
+        contentType:
+          type: string
+          minLength: 1
+        size:
+          type: integer
+          minimum: 1
+    GalleryUpload:
+      type: object
+      required: [id, ownerId, originalName, title, mediaKind, contentType, size, createdAt, mediaUrl, thumbnailUrl]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerId:
+          type: string
+          format: uuid
+        originalName:
+          type: string
+        title:
+          type: string
+        mediaKind:
+          type: string
+          enum: [photo, video]
+        contentType:
+          type: string
+        size:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        mediaUrl:
+          type: string
+          format: uri
+        thumbnailUrl:
+          type: string
+          format: uri
+    GalleryUploadResponse:
+      type: object
+      required: [upload]
+      properties:
+        upload:
+          $ref: "#/components/schemas/GalleryUpload"
+    GalleryListResponse:
+      type: object
+      required: [uploads]
+      properties:
+        uploads:
+          type: array
+          items:
+            $ref: "#/components/schemas/GalleryUpload"
+

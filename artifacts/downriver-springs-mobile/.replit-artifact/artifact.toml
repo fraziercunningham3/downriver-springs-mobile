@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/"
+title = "Downriver Springs Mobile"
+description = "A mobile vehicle inspection companion for customers and Downriver Spring Service customers. Scan vehicle components, review AI-assisted findings, copy mechanic-ready summaries, and track shop work orders."
+version = "1.0.0"
+id = "artifacts/downriver-springs-mobile"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/" ]
+localPort = 19802
+
+[services.development]
+run = "pnpm --filter @workspace/downriver-springs-mobile run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/downriver-springs-mobile", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/downriver-springs-mobile", "run", "serve" ]
+
+[services.env]
+PORT = "19802"
+BASE_PATH = "/"

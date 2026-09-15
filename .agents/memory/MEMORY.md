@@ -1,0 +1,6 @@
+- [Customer-sourced diagnostics](customer-sourced-diagnostics.md) — never fabricate inspection findings; require real user or technician observations and label media-only records for review.
+- [Managed Gemini provisioning](gemini-integration-provisioning.md) — provision managed Gemini access before API validation and restart the API workflow afterward.
+- [Expo preview environment](expo-preview-environment.md) — missing libglib can make React Native DevTools warn during Expo startup while the preview still works.
+- [Expo sharing links](expo-sharing-links.md) — customer sharing must use the published URL; workspace phone-preview QR codes are tied to the owner’s Expo session.
+- [RevenueCat Expo configuration](revenuecat-expo-config.md) — gate subscription queries on successful initialization and restart Metro after public env changes.
+- [Private gallery media](gallery-media-auth.md) — authenticated API streaming plus local caching keeps private media usable on both native and web clients.

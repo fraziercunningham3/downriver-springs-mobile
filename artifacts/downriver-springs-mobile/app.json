@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Downriver Springs Mobile",
+    "slug": "downriver-springs-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/downriver-icon.png",
+    "scheme": "downriver-springs-mobile",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.downriversprings.mobile",
+      "supportsTablet": false
+    },
+    "android": {},
+    "web": {
+      "favicon": "./assets/images/downriver-icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F6F7F9",
+          "image": "./assets/images/downriver-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "78b37301-51dd-4ff0-8bf7-54c79f1dacb9"
+      }
+    }
+  }
+}
