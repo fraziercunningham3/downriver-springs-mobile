@@ -4,3 +4,6 @@
 - [Expo sharing links](expo-sharing-links.md) — customer sharing must use the published URL; workspace phone-preview QR codes are tied to the owner’s Expo session.
 - [RevenueCat Expo configuration](revenuecat-expo-config.md) — gate subscription queries on successful initialization and restart Metro after public env changes.
 - [Private gallery media](gallery-media-auth.md) — authenticated API streaming plus local caching keeps private media usable on both native and web clients.
+- [EAS pnpm lockfile compatibility](eas-pnpm-lockfile.md) — keep overrides in root package.json so pnpm 9 builders accept frozen installs.
+- [Expo patch release age guard](expo-release-age-guard.md) — fresh Expo patch recommendations may be blocked by the workspace’s supply-chain release-age safeguard.
+- [Development schema sync](development-schema-sync.md) — authenticated integration routes can outpace the provisioned development database schema.

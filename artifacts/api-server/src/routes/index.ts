@@ -1,12 +1,13 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { ReplitConnectors } from "@replit/connectors-sdk";
 import { db } from "@workspace/db";
 import {
   expertReviewRequests,
+  shopSessions,
   shopUsers,
   shopVehicles,
   shopWorkOrders,
@@ -16,6 +17,7 @@ import healthRouter from "./health";
 import galleryRouter from "./gallery";
 import { logger } from "../lib/logger";
 import { createMobileDownloadUrl, createMobileUploadUrl } from "../lib/mobileObjectStorage";
+import { createShopSession, getShopAuth, type ShopAuthPayload } from "../lib/shopAuth";
 
 const router: IRouter = Router();
 const revenueCatConnectors = new ReplitConnectors();
@@ -163,6 +165,7 @@ const shopRegisterSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   phone: z.string().trim().min(7).max(30),
   password: z.string().min(8).max(128),
+  deviceName: z.string().trim().max(100).optional(),
   vehicle: z.object({
     label: z.string().trim().min(1).max(120),
     plate: z.string().trim().min(1).max(20),
@@ -171,6 +174,7 @@ const shopRegisterSchema = z.object({
 const shopSignInSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   password: z.string().min(1).max(128),
+  deviceName: z.string().trim().max(100).optional(),
 });
 const shopProfileUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -206,6 +210,7 @@ const uploadUrlSchema = z.object({
 });
 const staffWorkOrderUpdateSchema = z
   .object({
+    service: z.string().trim().min(1).max(240).optional(),
     status: workOrderStatusSchema.optional(),
     progress: z.number().min(0).max(1).optional(),
     eta: z.string().trim().min(1).max(120).optional(),
@@ -215,73 +220,21 @@ const staffWorkOrderUpdateSchema = z
     approved: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "At least one work-order field is required.");
+const staffWorkOrderCreateSchema = z.object({
+  customerId: z.string().uuid(),
+  vehicleId: z.string().uuid(),
+  service: z.string().trim().min(1).max(240),
+  status: workOrderStatusSchema.default("In progress"),
+  progress: z.number().min(0).max(1).default(0),
+  eta: z.string().trim().min(1).max(120),
+  technician: z.string().trim().min(1).max(120),
+  note: z.string().trim().min(1).max(1200),
+  estimate: z.string().trim().min(1).max(40),
+  approved: z.boolean().default(false),
+});
 
-type ShopAuthPayload = {
-  userId: string;
-  role: "customer" | "staff";
-};
-
-function createShopToken(user: Pick<ShopUser, "id" | "role">) {
-  const payload = encodeTokenPart(
-    JSON.stringify({
-      kind: "shop",
-      userId: user.id,
-      role: user.role,
-      exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    }),
-  );
-  const signature = createHmac("sha256", getSessionSecret())
-    .update(payload)
-    .digest("base64url");
-  return `shop.${payload}.${signature}`;
-}
-
-function verifyShopToken(value: unknown): ShopAuthPayload | null {
-  if (typeof value !== "string") return null;
-  const [prefix, encodedPayload, signature] = value.split(".");
-  if (prefix !== "shop" || !encodedPayload || !signature) return null;
-
-  const expected = createHmac("sha256", getSessionSecret())
-    .update(encodedPayload)
-    .digest("base64url");
-  const actualBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-  if (
-    actualBuffer.length !== expectedBuffer.length ||
-    !timingSafeEqual(actualBuffer, expectedBuffer)
-  ) {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    ) as Partial<ShopAuthPayload> & { kind?: string; exp?: number };
-    if (
-      payload.kind !== "shop" ||
-      typeof payload.userId !== "string" ||
-      (payload.role !== "customer" && payload.role !== "staff") ||
-      typeof payload.exp !== "number" ||
-      payload.exp <= Date.now()
-    ) {
-      return null;
-    }
-    return { userId: payload.userId, role: payload.role };
-  } catch {
-    return null;
-  }
-}
-
-function getShopAuth(req: Request) {
-  const authorization = req.header("authorization");
-  const token = authorization?.startsWith("Bearer ")
-    ? authorization.slice("Bearer ".length)
-    : undefined;
-  return verifyShopToken(token);
-}
-
-function requireShopRole(req: Request, res: Response, role: ShopAuthPayload["role"]) {
-  const auth = getShopAuth(req);
+async function requireShopRole(req: Request, res: Response, role: ShopAuthPayload["role"]) {
+  const auth = await getShopAuth(req);
   if (!auth || auth.role !== role) {
     res.status(401).json({ error: "A valid shop account session is required." });
     return null;
@@ -309,7 +262,7 @@ async function hasActiveProEntitlement(userId: string) {
 }
 
 async function requirePaidCustomer(req: Request, res: Response) {
-  const auth = requireShopRole(req, res, "customer");
+  const auth = await requireShopRole(req, res, "customer");
   if (!auth) return null;
   try {
     if (!(await hasActiveProEntitlement(auth.userId))) {
@@ -383,6 +336,7 @@ function serializeWorkOrder(
 ) {
   return {
     id: order.id,
+    customerId: order.customerId,
     vehicleId: order.vehicleId,
     vehicle: vehicle?.label ?? "Vehicle",
     plate: vehicle?.plate ?? "—",
@@ -460,8 +414,10 @@ router.post("/shop/auth/register", async (req, res) => {
       return { user, vehicle };
     });
 
+    const session = await createShopSession(created.user, parsed.data.deviceName);
     res.status(201).json({
-      token: createShopToken(created.user),
+      token: session.token,
+      sessionId: session.sessionId,
       user: serializeUser(created.user),
       vehicles: created.vehicle ? [serializeVehicle(created.vehicle)] : [],
       workOrders: [],
@@ -490,8 +446,10 @@ router.post("/shop/auth/sign-in", async (req, res) => {
       return;
     }
     const dashboard = user.role === "customer" ? await getShopDashboard(user.id) : { vehicles: [], workOrders: [] };
+    const session = await createShopSession(user, parsed.data.deviceName);
     res.json({
-      token: createShopToken(user),
+      token: session.token,
+      sessionId: session.sessionId,
       user: serializeUser(user),
       ...dashboard,
     });
@@ -502,7 +460,7 @@ router.post("/shop/auth/sign-in", async (req, res) => {
 });
 
 router.patch("/shop/auth/profile", async (req, res) => {
-  const auth = getShopAuth(req);
+  const auth = await getShopAuth(req);
   if (!auth) {
     res.status(401).json({ error: "A valid shop account session is required." });
     return;
@@ -538,8 +496,92 @@ router.patch("/shop/auth/profile", async (req, res) => {
   }
 });
 
+router.get("/shop/auth/sessions", async (req, res) => {
+  const auth = await getShopAuth(req);
+  if (!auth) {
+    res.status(401).json({ error: "A valid shop account session is required." });
+    return;
+  }
+  try {
+    const sessions = await db
+      .select()
+      .from(shopSessions)
+      .where(eq(shopSessions.userId, auth.userId));
+    const now = Date.now();
+    res.json({
+      sessions: sessions
+        .filter((session) => !session.revokedAt && session.expiresAt.getTime() > now)
+        .sort((left, right) => right.lastSeenAt.getTime() - left.lastSeenAt.getTime())
+        .map((session) => ({
+          id: session.id,
+          deviceName: session.deviceName,
+          createdAt: session.createdAt.toISOString(),
+          lastSeenAt: session.lastSeenAt.toISOString(),
+          expiresAt: session.expiresAt.toISOString(),
+          current: session.id === auth.sessionId,
+        })),
+    });
+  } catch (error) {
+    logger.error({ error, userId: auth.userId }, "Shop session list failed");
+    res.status(500).json({ error: "We could not load your signed-in devices right now." });
+  }
+});
+
+router.delete("/shop/auth/sessions/:id", async (req, res) => {
+  const auth = await getShopAuth(req);
+  if (!auth) {
+    res.status(401).json({ error: "A valid shop account session is required." });
+    return;
+  }
+  const sessionId = z.string().uuid().safeParse(req.params.id);
+  if (!sessionId.success) {
+    res.status(400).json({ error: "A valid device session is required." });
+    return;
+  }
+  try {
+    const [revoked] = await db
+      .update(shopSessions)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(shopSessions.id, sessionId.data),
+          eq(shopSessions.userId, auth.userId),
+          isNull(shopSessions.revokedAt),
+        ),
+      )
+      .returning({ id: shopSessions.id });
+    if (!revoked) {
+      res.status(404).json({ error: "That device session is no longer active." });
+      return;
+    }
+    res.json({ revoked: true, current: revoked.id === auth.sessionId });
+  } catch (error) {
+    logger.error({ error, userId: auth.userId, sessionId: sessionId.data }, "Shop session revocation failed");
+    res.status(500).json({ error: "We could not revoke that device session right now." });
+  }
+});
+
+router.post("/shop/auth/sessions/revoke-all", async (req, res) => {
+  const auth = await getShopAuth(req);
+  if (!auth) {
+    res.status(401).json({ error: "A valid shop account session is required." });
+    return;
+  }
+  try {
+    const revoked = await db
+      .update(shopSessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(shopSessions.userId, auth.userId), isNull(shopSessions.revokedAt)))
+      .returning({ id: shopSessions.id });
+    res.json({ revokedCount: revoked.length });
+  } catch (error) {
+    logger.error({ error, userId: auth.userId }, "All shop session revocation failed");
+    res.status(500).json({ error: "We could not sign out the other devices right now." });
+  }
+});
+
 router.get("/shop/dashboard", async (req, res) => {
-  const auth = requireShopRole(req, res, "customer");
+  const auth = await requireShopRole(req, res, "customer");
   if (!auth) return;
   try {
     const [user] = await db.select().from(shopUsers).where(eq(shopUsers.id, auth.userId)).limit(1);
@@ -555,7 +597,7 @@ router.get("/shop/dashboard", async (req, res) => {
 });
 
 router.post("/shop/work-orders/:id/approve", async (req, res) => {
-  const auth = requireShopRole(req, res, "customer");
+  const auth = await requireShopRole(req, res, "customer");
   if (!auth) return;
   const orderId = z.string().trim().min(1).max(80).safeParse(req.params.id);
   if (!orderId.success) {
@@ -626,15 +668,93 @@ router.post("/shop/staff/bootstrap", async (req, res) => {
         role: "staff",
       })
       .returning();
-    res.status(201).json({ token: createShopToken(user), user: serializeUser(user) });
+    const session = await createShopSession(user, parsed.data.deviceName);
+    res.status(201).json({ token: session.token, sessionId: session.sessionId, user: serializeUser(user) });
   } catch (error) {
     logger.error({ error }, "Shop staff bootstrap failed");
     res.status(500).json({ error: "We could not create the staff account right now." });
   }
 });
 
+router.post("/shop/staff/work-orders", async (req, res) => {
+  const auth = await requireShopRole(req, res, "staff");
+  if (!auth) return;
+  const parsed = staffWorkOrderCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Include a customer, vehicle, service, estimate, and work-order details." });
+    return;
+  }
+  const idempotencyHeader = req.header("Idempotency-Key");
+  const parsedIdempotencyKey = idempotencyHeader
+    ? z.string().trim().min(1).max(120).safeParse(idempotencyHeader)
+    : null;
+  if (parsedIdempotencyKey && !parsedIdempotencyKey.success) {
+    res.status(400).json({ error: "The work-order idempotency key is invalid." });
+    return;
+  }
+  const workOrderId = parsedIdempotencyKey?.success ? parsedIdempotencyKey.data : randomUUID();
+
+  try {
+    const [customer, vehicle] = await Promise.all([
+      db
+        .select()
+        .from(shopUsers)
+        .where(and(eq(shopUsers.id, parsed.data.customerId), eq(shopUsers.role, "customer")))
+        .limit(1),
+      db
+        .select()
+        .from(shopVehicles)
+        .where(and(eq(shopVehicles.id, parsed.data.vehicleId), eq(shopVehicles.customerId, parsed.data.customerId)))
+        .limit(1),
+    ]);
+    if (!customer[0]) {
+      res.status(404).json({ error: "Customer not found." });
+      return;
+    }
+    if (!vehicle[0]) {
+      res.status(400).json({ error: "That vehicle does not belong to the selected customer." });
+      return;
+    }
+
+    const [created] = await db
+      .insert(shopWorkOrders)
+      .values({
+        id: workOrderId,
+        customerId: parsed.data.customerId,
+        vehicleId: parsed.data.vehicleId,
+        service: parsed.data.service,
+        status: parsed.data.status,
+        progress: parsed.data.progress,
+        eta: parsed.data.eta,
+        technician: parsed.data.technician,
+        note: parsed.data.note,
+        estimate: parsed.data.estimate,
+        approved: parsed.data.approved,
+      })
+      .onConflictDoNothing({ target: shopWorkOrders.id })
+      .returning();
+    const order = created ?? (await db
+      .select()
+      .from(shopWorkOrders)
+      .where(eq(shopWorkOrders.id, workOrderId))
+      .limit(1))[0];
+    if (!order) {
+      throw new Error("The work order was not available after the idempotent insert.");
+    }
+    res.status(created ? 201 : 200).json({
+      workOrder: {
+        ...serializeWorkOrder(order, vehicle[0]),
+        customer: { id: customer[0].id, name: customer[0].name, email: customer[0].email },
+      },
+    });
+  } catch (error) {
+    logger.error({ error, userId: auth.userId }, "Staff work-order creation failed");
+    res.status(500).json({ error: "We could not create this work order right now." });
+  }
+});
+
 router.get("/shop/staff/work-orders", async (req, res) => {
-  const auth = requireShopRole(req, res, "staff");
+  const auth = await requireShopRole(req, res, "staff");
   if (!auth) return;
   try {
     const [orders, vehicles, customers] = await Promise.all([
@@ -652,6 +772,16 @@ router.get("/shop/staff/work-orders", async (req, res) => {
               email: customers.find((customer) => customer.id === order.customerId)!.email,
             }
           : null,
+      })),
+      customers: customers.map((customer) => ({
+        id: customer.id,
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone,
+        role: customer.role,
+        vehicles: vehicles
+          .filter((vehicle) => vehicle.customerId === customer.id)
+          .map(serializeVehicle),
       })),
     });
   } catch (error) {
@@ -713,7 +843,7 @@ router.post("/shop/expert-reviews/upload-url", async (req, res) => {
 });
 
 router.get("/shop/expert-reviews", async (req, res) => {
-  const auth = requireShopRole(req, res, "customer");
+  const auth = await requireShopRole(req, res, "customer");
   if (!auth) return;
   try {
     const reviews = await db
@@ -729,7 +859,7 @@ router.get("/shop/expert-reviews", async (req, res) => {
 });
 
 router.patch("/shop/staff/work-orders/:id", async (req, res) => {
-  const auth = requireShopRole(req, res, "staff");
+  const auth = await requireShopRole(req, res, "staff");
   if (!auth) return;
   const orderId = z.string().trim().min(1).max(80).safeParse(req.params.id);
   const parsed = staffWorkOrderUpdateSchema.safeParse(req.body);
@@ -753,7 +883,19 @@ router.patch("/shop/staff/work-orders/:id", async (req, res) => {
       .from(shopVehicles)
       .where(eq(shopVehicles.id, updated.vehicleId))
       .limit(1);
-    res.json({ workOrder: serializeWorkOrder(updated, vehicle) });
+    const [customer] = await db
+      .select()
+      .from(shopUsers)
+      .where(eq(shopUsers.id, updated.customerId))
+      .limit(1);
+    res.json({
+      workOrder: {
+        ...serializeWorkOrder(updated, vehicle),
+        customer: customer
+          ? { id: customer.id, name: customer.name, email: customer.email }
+          : null,
+      },
+    });
   } catch (error) {
     logger.error({ error, orderId: orderId.data }, "Staff work-order update failed");
     res.status(500).json({ error: "We could not save this work-order update right now." });
@@ -761,7 +903,7 @@ router.patch("/shop/staff/work-orders/:id", async (req, res) => {
 });
 
 router.get("/shop/staff/expert-reviews", async (req, res) => {
-  const auth = requireShopRole(req, res, "staff");
+  const auth = await requireShopRole(req, res, "staff");
   if (!auth) return;
   try {
     const [reviews, customers] = await Promise.all([
@@ -781,7 +923,7 @@ router.get("/shop/staff/expert-reviews", async (req, res) => {
 });
 
 router.get("/shop/expert-reviews/:id/media/:index", async (req, res) => {
-  const auth = getShopAuth(req);
+  const auth = await getShopAuth(req);
   if (!auth) {
     res.status(401).json({ error: "A valid shop account session is required." });
     return;
@@ -811,7 +953,7 @@ router.get("/shop/expert-reviews/:id/media/:index", async (req, res) => {
 });
 
 router.patch("/shop/staff/expert-reviews/:id", async (req, res) => {
-  const auth = requireShopRole(req, res, "staff");
+  const auth = await requireShopRole(req, res, "staff");
   if (!auth) return;
   const reviewId = z.string().uuid().safeParse(req.params.id);
   const parsed = expertReviewUpdateSchema.safeParse(req.body);

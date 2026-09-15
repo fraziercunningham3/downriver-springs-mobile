@@ -6,7 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ShopUser } from './shopUser';
+import type { ShopVehicle } from './shopVehicle';
 
-export type ListShopStaffWorkOrders200WorkOrdersItemCustomer = ShopUser & {
-  readonly role?: unknown;
+export type ShopStaffCustomer = ShopUser & {
+  vehicles: ShopVehicle[];
 };

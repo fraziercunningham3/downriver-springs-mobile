@@ -1,10 +1,10 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { and, desc, eq } from "drizzle-orm";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { db, galleryUploads, type GalleryUpload } from "@workspace/db";
 import { ObjectNotFoundError, ObjectStorageService } from "../lib/objectStorage";
+import { getShopAuth, type ShopAuthPayload } from "../lib/shopAuth";
 
 const router: IRouter = Router();
 const objectStorageService = new ObjectStorageService();
@@ -25,49 +25,8 @@ const galleryCreateSchema = z.object({
 });
 const idSchema = z.string().uuid();
 
-type ShopAuth = { userId: string; role: "customer" | "staff" };
-
-function getShopAuth(req: Request): ShopAuth | null {
-  const authorization = req.header("authorization");
-  const token = authorization?.startsWith("Bearer ")
-    ? authorization.slice("Bearer ".length)
-    : undefined;
-  if (!token) return null;
-  const [prefix, encodedPayload, signature] = token.split(".");
-  const secret = process.env.SESSION_SECRET;
-  if (!secret || prefix !== "shop" || !encodedPayload || !signature) return null;
-
-  const expected = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
-  const actualBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-  if (
-    actualBuffer.length !== expectedBuffer.length ||
-    !timingSafeEqual(actualBuffer, expectedBuffer)
-  ) {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    ) as { kind?: string; userId?: string; role?: string; exp?: number };
-    if (
-      payload.kind !== "shop" ||
-      typeof payload.userId !== "string" ||
-      (payload.role !== "customer" && payload.role !== "staff") ||
-      typeof payload.exp !== "number" ||
-      payload.exp <= Date.now()
-    ) {
-      return null;
-    }
-    return { userId: payload.userId, role: payload.role };
-  } catch {
-    return null;
-  }
-}
-
-function requireShopAuth(req: Request, res: Response) {
-  const auth = getShopAuth(req);
+async function requireShopAuth(req: Request, res: Response) {
+  const auth = await getShopAuth(req);
   if (!auth) {
     res.status(401).json({ error: "A valid shop account session is required." });
     return null;
@@ -90,7 +49,7 @@ function serializeUpload(upload: GalleryUpload) {
   };
 }
 
-async function getVisibleUpload(id: string, auth: ShopAuth) {
+async function getVisibleUpload(id: string, auth: ShopAuthPayload) {
   const [upload] = await db
     .select()
     .from(galleryUploads)
@@ -116,7 +75,7 @@ async function streamObject(res: Response, objectPath: string) {
 }
 
 router.post("/gallery/uploads/request-url", async (req, res) => {
-  const auth = requireShopAuth(req, res);
+  const auth = await requireShopAuth(req, res);
   if (!auth) return;
   const parsed = uploadUrlRequestSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -135,7 +94,7 @@ router.post("/gallery/uploads/request-url", async (req, res) => {
 });
 
 router.get("/gallery", async (req, res) => {
-  const auth = requireShopAuth(req, res);
+  const auth = await requireShopAuth(req, res);
   if (!auth) return;
   try {
     const uploads = await db
@@ -151,7 +110,7 @@ router.get("/gallery", async (req, res) => {
 });
 
 router.post("/gallery", async (req, res) => {
-  const auth = requireShopAuth(req, res);
+  const auth = await requireShopAuth(req, res);
   if (!auth) return;
   const parsed = galleryCreateSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -185,7 +144,7 @@ router.post("/gallery", async (req, res) => {
 });
 
 router.delete("/gallery/:id", async (req, res) => {
-  const auth = requireShopAuth(req, res);
+  const auth = await requireShopAuth(req, res);
   if (!auth) return;
   const parsedId = idSchema.safeParse(req.params.id);
   if (!parsedId.success) {
@@ -232,7 +191,7 @@ router.delete("/gallery/:id", async (req, res) => {
 });
 
 async function serveGalleryObject(req: Request, res: Response, thumbnail: boolean) {
-  const auth = requireShopAuth(req, res);
+  const auth = await requireShopAuth(req, res);
   if (!auth) return;
   const parsedId = idSchema.safeParse(req.params.id);
   if (!parsedId.success) {

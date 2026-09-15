@@ -7,6 +7,10 @@
  */
 
 export * from './approveShopWorkOrder200';
+export * from './createShopWorkOrder200';
+export * from './createShopWorkOrder200WorkOrder';
+export * from './createShopWorkOrder201';
+export * from './createShopWorkOrder201WorkOrder';
 export * from './galleryCreateRequest';
 export * from './galleryCreateRequestMediaKind';
 export * from './galleryListResponse';
@@ -28,17 +32,20 @@ export * from './inspectionSession';
 export * from './inspectionSessionRequest';
 export * from './listShopStaffWorkOrders200';
 export * from './listShopStaffWorkOrders200WorkOrdersItem';
-export * from './listShopStaffWorkOrders200WorkOrdersItemCustomer';
 export * from './shopAuthResponse';
 export * from './shopDashboard';
 export * from './shopRegisterRequest';
 export * from './shopRegisterRequestVehicle';
 export * from './shopSignInRequest';
 export * from './shopStaffBootstrapRequest';
+export * from './shopStaffCustomer';
 export * from './shopUser';
 export * from './shopUserRole';
 export * from './shopVehicle';
 export * from './shopWorkOrder';
+export * from './shopWorkOrderCreate';
+export * from './shopWorkOrderCreateStatus';
+export * from './shopWorkOrderCustomer';
 export * from './shopWorkOrderStatus';
 export * from './shopWorkOrderUpdate';
 export * from './shopWorkOrderUpdateStatus';

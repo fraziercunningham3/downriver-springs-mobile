@@ -5,25 +5,22 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { ShopWorkOrderStatus } from './shopWorkOrderStatus';
+import type { ShopWorkOrderCreateStatus } from './shopWorkOrderCreateStatus';
 
-export interface ShopWorkOrder {
-  id: string;
+export interface ShopWorkOrderCreate {
   customerId: string;
   vehicleId: string;
-  vehicle: string;
-  plate: string;
-  status: ShopWorkOrderStatus;
-  updatedAt: Date;
+  /** @minLength 1 */
   service: string;
+  status?: ShopWorkOrderCreateStatus;
   /**
      * @minimum 0
      * @maximum 1
      */
-  progress: number;
+  progress?: number;
   eta: string;
   technician: string;
   note: string;
   estimate: string;
-  approved: boolean;
+  approved?: boolean;
 }

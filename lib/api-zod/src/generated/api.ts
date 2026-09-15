@@ -175,6 +175,7 @@ export const RegisterShopCustomerResponse = zod.object({
 })),
   "workOrders": zod.array(zod.object({
   "id": zod.string(),
+  "customerId": zod.string().uuid(),
   "vehicleId": zod.string().uuid(),
   "vehicle": zod.string(),
   "plate": zod.string(),
@@ -219,6 +220,7 @@ export const SignInShopCustomerResponse = zod.object({
 })),
   "workOrders": zod.array(zod.object({
   "id": zod.string(),
+  "customerId": zod.string().uuid(),
   "vehicleId": zod.string().uuid(),
   "vehicle": zod.string(),
   "plate": zod.string(),
@@ -257,6 +259,7 @@ export const GetShopDashboardResponse = zod.object({
 })),
   "workOrders": zod.array(zod.object({
   "id": zod.string(),
+  "customerId": zod.string().uuid(),
   "vehicleId": zod.string().uuid(),
   "vehicle": zod.string(),
   "plate": zod.string(),
@@ -288,6 +291,7 @@ export const approveShopWorkOrderResponseWorkOrderProgressMax = 1;
 export const ApproveShopWorkOrderResponse = zod.object({
   "workOrder": zod.object({
   "id": zod.string(),
+  "customerId": zod.string().uuid(),
   "vehicleId": zod.string().uuid(),
   "vehicle": zod.string(),
   "plate": zod.string(),
@@ -334,6 +338,7 @@ export const updateShopWorkOrderBodyProgressMax = 1;
 
 
 export const UpdateShopWorkOrderBody = zod.object({
+  "service": zod.string().optional(),
   "status": zod.enum(['In progress', 'Awaiting approval', 'Ready for pickup']).optional(),
   "progress": zod.number().min(updateShopWorkOrderBodyProgressMin).max(updateShopWorkOrderBodyProgressMax).optional(),
   "eta": zod.string().optional(),
@@ -347,6 +352,74 @@ export const UpdateShopWorkOrderResponse = zod.unknown()
 
 
 /**
+ * @summary Create and assign a work order to a customer vehicle
+ */
+export const createShopWorkOrderHeaderIdempotencyKeyMax = 120;
+
+
+
+export const CreateShopWorkOrderHeader = zod.object({
+  "Idempotency-Key": zod.string().min(1).max(createShopWorkOrderHeaderIdempotencyKeyMax).optional().describe('Reuse this key when retrying one staff assignment to avoid creating a duplicate work order.')
+})
+
+
+export const createShopWorkOrderBodyProgressMin = 0;
+export const createShopWorkOrderBodyProgressMax = 1;
+
+
+
+export const CreateShopWorkOrderBody = zod.object({
+  "customerId": zod.string().uuid(),
+  "vehicleId": zod.string().uuid(),
+  "service": zod.string().min(1),
+  "status": zod.enum(['In progress', 'Awaiting approval', 'Ready for pickup']).optional(),
+  "progress": zod.number().min(createShopWorkOrderBodyProgressMin).max(createShopWorkOrderBodyProgressMax).optional(),
+  "eta": zod.string(),
+  "technician": zod.string(),
+  "note": zod.string(),
+  "estimate": zod.string(),
+  "approved": zod.boolean().optional()
+})
+
+export const createShopWorkOrderResponseWorkOrderOneProgressMin = 0;
+export const createShopWorkOrderResponseWorkOrderOneProgressMax = 1;
+
+
+
+export const CreateShopWorkOrderResponse = zod.object({
+  "workOrder": zod.object({
+  "id": zod.string(),
+  "customerId": zod.string().uuid(),
+  "vehicleId": zod.string().uuid(),
+  "vehicle": zod.string(),
+  "plate": zod.string(),
+  "status": zod.enum(['In progress', 'Awaiting approval', 'Ready for pickup']),
+  "updatedAt": zod.coerce.date(),
+  "service": zod.string(),
+  "progress": zod.number().min(createShopWorkOrderResponseWorkOrderOneProgressMin).max(createShopWorkOrderResponseWorkOrderOneProgressMax),
+  "eta": zod.string(),
+  "technician": zod.string(),
+  "note": zod.string(),
+  "estimate": zod.string(),
+  "approved": zod.boolean()
+}).and(zod.object({
+  "customer": zod.object({
+  "id": zod.string().uuid(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "role": zod.enum(['customer', 'staff'])
+}).and(zod.object({
+  "vehicles": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "label": zod.string(),
+  "plate": zod.string()
+}))
+}))
+}))
+})
+
+
+/**
  * @summary List work orders available to authenticated staff
  */
 export const listShopStaffWorkOrdersResponseWorkOrdersItemOneProgressMin = 0;
@@ -357,6 +430,7 @@ export const listShopStaffWorkOrdersResponseWorkOrdersItemOneProgressMax = 1;
 export const ListShopStaffWorkOrdersResponse = zod.object({
   "workOrders": zod.array(zod.object({
   "id": zod.string(),
+  "customerId": zod.string().uuid(),
   "vehicleId": zod.string().uuid(),
   "vehicle": zod.string(),
   "plate": zod.string(),
@@ -373,12 +447,21 @@ export const ListShopStaffWorkOrdersResponse = zod.object({
   "customer": zod.object({
   "id": zod.string().uuid(),
   "name": zod.string(),
+  "email": zod.string().email()
+})
+}))),
+  "customers": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "name": zod.string(),
   "email": zod.string().email(),
   "role": zod.enum(['customer', 'staff'])
 }).and(zod.object({
-  "role": zod.unknown()
+  "vehicles": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "label": zod.string(),
+  "plate": zod.string()
 }))
-})))
+}))).optional()
 })
 
 

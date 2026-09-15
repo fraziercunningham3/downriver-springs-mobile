@@ -1,16 +1,32 @@
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { API_BASE_URL, useApp } from '@/context/AppContext';
+import { API_BASE_URL, useApp, type StaffWorkOrderInput, type WorkOrderStatus } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
 
 export default function AdminScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activeProfile, profiles, importShopCustomer, removeProfile, shopUser, shopToken, signInShopCustomer, signOutShopCustomer, shopAuthLoading, shopError } = useApp();
+  const {
+    activeProfile,
+    profiles,
+    importShopCustomer,
+    removeProfile,
+    shopUser,
+    shopToken,
+    signInShopCustomer,
+    signOutShopCustomer,
+    shopAuthLoading,
+    shopError,
+    staffCustomers,
+    staffWorkOrders,
+    refreshStaffWorkOrders,
+    createStaffWorkOrder,
+    updateStaffWorkOrder,
+  } = useApp();
   const [name, setName] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
@@ -18,6 +34,19 @@ export default function AdminScreen() {
   const [expertReviews, setExpertReviews] = useState<Array<{ id: string; vin: string; vehicle: string; question: string; pricingContext: string; status: string; response?: string | null; media: Array<{ kind: 'photo' | 'video' }>; customer?: { name: string; email: string } }>>([]);
   const [reviewResponses, setReviewResponses] = useState<Record<string, string>>({});
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedVehicleId, setSelectedVehicleId] = useState('');
+  const [newService, setNewService] = useState('');
+  const [newStatus, setNewStatus] = useState<WorkOrderStatus>('In progress');
+  const [newProgress, setNewProgress] = useState('0');
+  const [newEta, setNewEta] = useState('');
+  const [newTechnician, setNewTechnician] = useState('');
+  const [newNote, setNewNote] = useState('');
+  const [newEstimate, setNewEstimate] = useState('');
+  const [creatingWorkOrder, setCreatingWorkOrder] = useState(false);
+  const workOrderIdempotencyKey = useRef<string | null>(null);
+  const [savingWorkOrderId, setSavingWorkOrderId] = useState<string | null>(null);
+  const [orderDrafts, setOrderDrafts] = useState<Record<string, Partial<StaffWorkOrderInput>>>({});
   const isAdmin = activeProfile.role === 'master' || shopUser?.role === 'staff';
 
   useEffect(() => {
@@ -34,11 +63,114 @@ export default function AdminScreen() {
   if (!isAdmin) return <View style={[styles.locked, { backgroundColor: colors.background }]}><Feather name="lock" size={24} color={colors.primary} /><Text style={styles.lockedTitle}>Master profile only</Text><Text style={styles.lockedBody}>Only the Downriver Springs master profile can manage community profiles.</Text><Pressable onPress={() => router.back()} style={styles.backButton}><Text style={styles.backButtonText}>Go back</Text></Pressable></View>;
 
   if (shopUser?.role === 'staff') {
+    const selectedCustomer = staffCustomers.find((customer) => customer.id === selectedCustomerId);
+    const orderDraft = (order: (typeof staffWorkOrders)[number]) => orderDrafts[order.id] ?? {
+      service: order.service,
+      status: order.status,
+      progress: order.progress,
+      eta: order.eta,
+      technician: order.technician,
+      note: order.note,
+      estimate: order.estimate,
+      approved: order.approved,
+    };
+    const setOrderDraft = (id: string, updates: Partial<StaffWorkOrderInput>) => {
+      setOrderDrafts((current) => ({ ...current, [id]: { ...current[id], ...updates } }));
+    };
+    const createWorkOrder = async () => {
+      const progress = Math.min(100, Math.max(0, Number(newProgress) || 0)) / 100;
+      if (!selectedCustomerId || !selectedVehicleId || !newService.trim() || !newEta.trim() || !newTechnician.trim() || !newNote.trim() || !newEstimate.trim()) {
+        setQueueMessage('Choose a customer and vehicle, then complete every work-order field.');
+        return;
+      }
+      setCreatingWorkOrder(true);
+      const idempotencyKey = workOrderIdempotencyKey.current ?? createWorkOrderIdempotencyKey();
+      workOrderIdempotencyKey.current = idempotencyKey;
+      try {
+        await createStaffWorkOrder({
+          customerId: selectedCustomerId,
+          vehicleId: selectedVehicleId,
+          service: newService.trim(),
+          status: newStatus,
+          progress,
+          eta: newEta.trim(),
+          technician: newTechnician.trim(),
+          note: newNote.trim(),
+          estimate: newEstimate.trim(),
+          approved: false,
+        }, idempotencyKey);
+        workOrderIdempotencyKey.current = null;
+        setNewService('');
+        setNewProgress('0');
+        setNewEta('');
+        setNewTechnician('');
+        setNewNote('');
+        setNewEstimate('');
+        setQueueMessage('Work order created and assigned.');
+      } catch {
+        // The context keeps the actionable server error visible in the banner.
+      } finally {
+        setCreatingWorkOrder(false);
+      }
+    };
+    const saveWorkOrder = async (order: (typeof staffWorkOrders)[number]) => {
+      const draft = orderDraft(order);
+      setSavingWorkOrderId(order.id);
+      try {
+        await updateStaffWorkOrder(order.id, draft);
+        setOrderDrafts((current) => {
+          const next = { ...current };
+          delete next[order.id];
+          return next;
+        });
+        setQueueMessage('Work-order update saved.');
+      } catch {
+        // The context keeps the actionable server error visible in the banner.
+      } finally {
+        setSavingWorkOrderId(null);
+      }
+    };
     return (
       <ScrollView contentContainerStyle={{ paddingTop: insets.top + 14, paddingBottom: 100 }} style={[styles.screen, { backgroundColor: colors.background }]} keyboardShouldPersistTaps="handled">
         <View style={styles.topBar}><Text style={styles.screenTitle}>Travis · expert queue</Text><Pressable onPress={() => signOutShopCustomer()} style={styles.iconButton}><Feather name="log-out" size={18} color={colors.foreground} /></Pressable></View>
-        <View style={styles.adminHero}><View style={styles.adminIcon}><Feather name="shield" size={20} color="#FFFFFF" /></View><View style={{ flex: 1 }}><Text style={styles.adminTitle}>Private customer reviews</Text><Text style={styles.adminBody}>Review real VIN evidence, answer with verified observations, and keep uncertainty clear.</Text></View></View>
+        <View style={styles.adminHero}><View style={styles.adminIcon}><Feather name="shield" size={20} color="#FFFFFF" /></View><View style={{ flex: 1 }}><Text style={styles.adminTitle}>Shop workspace</Text><Text style={styles.adminBody}>Assign repairs to the right customer vehicle and keep portal updates current.</Text></View></View>
         {queueMessage ? <Text style={styles.queueMessage}>{queueMessage}</Text> : null}
+        <View style={styles.sectionHeader}><Text style={styles.sectionLabel}>NEW WORK ORDER</Text><Pressable onPress={() => refreshStaffWorkOrders().catch(() => undefined)}><Text style={styles.refreshText}>Refresh queue</Text></Pressable></View>
+        <View style={styles.importCard}>
+          <Text style={styles.fieldLabel}>Customer</Text>
+          <View style={styles.choiceWrap}>
+            {staffCustomers.map((customer) => <Pressable key={customer.id} onPress={() => { setSelectedCustomerId(customer.id); setSelectedVehicleId(customer.vehicles[0]?.id ?? ''); }} style={[styles.choiceButton, selectedCustomerId === customer.id && styles.choiceButtonActive]}><Text style={[styles.choiceText, selectedCustomerId === customer.id && styles.choiceTextActive]}>{customer.name}</Text><Text style={styles.choiceMeta}>{customer.email}</Text></Pressable>)}
+          </View>
+          {staffCustomers.length === 0 ? <Text style={styles.emptyInline}>No customer accounts are available yet.</Text> : null}
+          <Text style={styles.fieldLabel}>Vehicle</Text>
+          <View style={styles.choiceWrap}>
+            {(selectedCustomer?.vehicles ?? []).map((vehicle) => <Pressable key={vehicle.id} onPress={() => setSelectedVehicleId(vehicle.id)} style={[styles.choiceButton, selectedVehicleId === vehicle.id && styles.choiceButtonActive]}><Text style={[styles.choiceText, selectedVehicleId === vehicle.id && styles.choiceTextActive]}>{vehicle.label}</Text><Text style={styles.choiceMeta}>{vehicle.plate}</Text></Pressable>)}
+          </View>
+          {selectedCustomer && selectedCustomer.vehicles.length === 0 ? <Text style={styles.emptyInline}>This customer needs a vehicle before a work order can be assigned.</Text> : null}
+          <Text style={styles.fieldLabel}>Service</Text><TextInput value={newService} onChangeText={setNewService} style={styles.input} placeholder="e.g. Front suspension inspection" placeholderTextColor="#94A0B2" />
+          <Text style={styles.fieldLabel}>Status</Text>
+          <View style={styles.statusChoiceRow}>{(['In progress', 'Awaiting approval', 'Ready for pickup'] as WorkOrderStatus[]).map((status) => <Pressable key={status} onPress={() => setNewStatus(status)} style={[styles.statusChoice, newStatus === status && styles.statusChoiceActive]}><Text style={[styles.statusChoiceText, newStatus === status && styles.statusChoiceTextActive]}>{status}</Text></Pressable>)}</View>
+          <View style={styles.twoColumn}><View style={styles.column}><Text style={styles.fieldLabel}>Progress (%)</Text><TextInput value={newProgress} onChangeText={setNewProgress} keyboardType="numeric" style={styles.input} placeholder="0" placeholderTextColor="#94A0B2" /></View><View style={styles.column}><Text style={styles.fieldLabel}>Estimate</Text><TextInput value={newEstimate} onChangeText={setNewEstimate} style={styles.input} placeholder="$0.00" placeholderTextColor="#94A0B2" /></View></View>
+          <Text style={styles.fieldLabel}>ETA</Text><TextInput value={newEta} onChangeText={setNewEta} style={styles.input} placeholder="e.g. Tomorrow by 3 PM" placeholderTextColor="#94A0B2" />
+          <Text style={styles.fieldLabel}>Technician</Text><TextInput value={newTechnician} onChangeText={setNewTechnician} style={styles.input} placeholder="Assigned technician" placeholderTextColor="#94A0B2" />
+          <Text style={styles.fieldLabel}>Customer note</Text><TextInput value={newNote} onChangeText={setNewNote} multiline style={styles.multilineInput} placeholder="What should the customer see?" placeholderTextColor="#94A0B2" />
+          <Pressable disabled={creatingWorkOrder} onPress={createWorkOrder} style={[styles.importButton, creatingWorkOrder && styles.disabled]}><Feather name="clipboard" size={16} color="#FFFFFF" /><Text style={styles.importButtonText}>{creatingWorkOrder ? 'Creating…' : 'Create and assign work order'}</Text></Pressable>
+        </View>
+        <View style={styles.sectionHeader}><Text style={styles.sectionLabel}>WORK-ORDER QUEUE</Text><Text style={styles.profileCount}>{staffWorkOrders.length} orders</Text></View>
+        {staffWorkOrders.map((order) => {
+          const draft = orderDraft(order);
+          return <View key={order.id} style={styles.reviewCard}>
+            <View style={styles.reviewHeader}><View style={{ flex: 1 }}><Text style={styles.reviewVehicle}>{order.customer?.name ?? 'Customer'} · {order.vehicle}</Text><Text style={styles.reviewCustomer}>{order.plate} · {order.id}</Text></View><Text style={styles.reviewStatus}>{draft.status}</Text></View>
+            <Text style={styles.fieldLabel}>Service</Text><TextInput value={draft.service ?? ''} onChangeText={(value) => setOrderDraft(order.id, { service: value })} style={styles.input} />
+            <View style={styles.statusChoiceRow}>{(['In progress', 'Awaiting approval', 'Ready for pickup'] as WorkOrderStatus[]).map((status) => <Pressable key={status} onPress={() => setOrderDraft(order.id, { status })} style={[styles.statusChoice, draft.status === status && styles.statusChoiceActive]}><Text style={[styles.statusChoiceText, draft.status === status && styles.statusChoiceTextActive]}>{status}</Text></Pressable>)}</View>
+            <View style={styles.twoColumn}><View style={styles.column}><Text style={styles.fieldLabel}>Progress (%)</Text><TextInput value={String(Math.round((draft.progress ?? 0) * 100))} onChangeText={(value) => setOrderDraft(order.id, { progress: Math.min(100, Math.max(0, Number(value) || 0)) / 100 })} keyboardType="numeric" style={styles.input} /></View><View style={styles.column}><Text style={styles.fieldLabel}>Estimate</Text><TextInput value={draft.estimate ?? ''} onChangeText={(value) => setOrderDraft(order.id, { estimate: value })} style={styles.input} /></View></View>
+            <Text style={styles.fieldLabel}>ETA</Text><TextInput value={draft.eta ?? ''} onChangeText={(value) => setOrderDraft(order.id, { eta: value })} style={styles.input} />
+            <Text style={styles.fieldLabel}>Technician</Text><TextInput value={draft.technician ?? ''} onChangeText={(value) => setOrderDraft(order.id, { technician: value })} style={styles.input} />
+            <Text style={styles.fieldLabel}>Customer note</Text><TextInput value={draft.note ?? ''} onChangeText={(value) => setOrderDraft(order.id, { note: value })} multiline style={styles.multilineInput} />
+            <Pressable onPress={() => setOrderDraft(order.id, { approved: !draft.approved })} style={styles.approvalToggle}><Feather name={draft.approved ? 'check-square' : 'square'} size={17} color="#2455D6" /><Text style={styles.approvalText}>{draft.approved ? 'Estimate approved by customer' : 'Estimate not approved'}</Text></Pressable>
+            <Pressable disabled={savingWorkOrderId === order.id} onPress={() => saveWorkOrder(order)} style={[styles.importButton, savingWorkOrderId === order.id && styles.disabled]}><Text style={styles.importButtonText}>{savingWorkOrderId === order.id ? 'Saving…' : 'Save customer-visible update'}</Text></Pressable>
+          </View>;
+        })}
         {expertReviews.length === 0 ? <View style={styles.emptyQueue}><Feather name="inbox" size={22} color={colors.mutedForeground} /><Text style={styles.emptyQueueTitle}>No expert reviews yet.</Text><Text style={styles.emptyQueueBody}>New Pro requests will appear here.</Text></View> : expertReviews.map((review) => (
           <View key={review.id} style={styles.reviewCard}><View style={styles.reviewHeader}><Text style={styles.reviewVehicle}>{review.vehicle}</Text><Text style={styles.reviewStatus}>{review.status.replace('_', ' ')}</Text></View><Text style={styles.reviewCustomer}>{review.customer?.name ?? 'Customer'} · {review.customer?.email ?? 'email unavailable'}</Text><Text style={styles.reviewVin}>VIN {review.vin}</Text><Text style={styles.reviewQuestion}>{review.question}</Text>{review.pricingContext ? <Text style={styles.reviewPricing}>Pricing context: {review.pricingContext}</Text> : null}<View style={styles.attachmentRow}>{review.media.map((item, index) => <Pressable key={`${review.id}-${index}`} onPress={() => openAttachment(review.id, index)} style={styles.attachmentButton}><Feather name={item.kind === 'video' ? 'video' : 'image'} size={13} color="#2455D6" /><Text style={styles.attachmentText}>{item.kind === 'video' ? 'Video' : 'Photo'} {index + 1}</Text></Pressable>)}</View><TextInput value={reviewResponses[review.id] ?? review.response ?? ''} onChangeText={(value) => setReviewResponses((current) => ({ ...current, [review.id]: value }))} multiline placeholder="Write a verified response for the customer…" placeholderTextColor="#94A0B2" style={styles.responseInput} /><View style={styles.reviewActions}><Pressable onPress={() => updateReview(review.id, 'in_review')} style={styles.secondaryAction}><Text style={styles.secondaryActionText}>Mark in review</Text></Pressable><Pressable onPress={() => updateReview(review.id, 'answered')} style={styles.importButton}><Text style={styles.importButtonText}>Send answer</Text></Pressable></View></View>
         ))}
@@ -56,7 +188,7 @@ export default function AdminScreen() {
     setVehicle('');
   };
 
-  const updateReview = async (id: string, status: 'in_review' | 'answered') => {
+  async function updateReview(id: string, status: 'in_review' | 'answered') {
     if (!shopToken) return;
     const response = await fetch(`${API_BASE_URL}/shop/staff/expert-reviews/${id}`, {
       method: 'PATCH',
@@ -70,9 +202,9 @@ export default function AdminScreen() {
     }
     setExpertReviews((current) => current.map((review) => review.id === id ? result.review! : review));
     setQueueMessage('Expert review saved.');
-  };
+  }
 
-  const openAttachment = async (reviewId: string, index: number) => {
+  async function openAttachment(reviewId: string, index: number) {
     if (!shopToken) return;
     const response = await fetch(`${API_BASE_URL}/shop/expert-reviews/${reviewId}/media/${index}`, { headers: { Authorization: `Bearer ${shopToken}` } });
     const result = await response.json() as { url?: string; error?: string };
@@ -81,7 +213,7 @@ export default function AdminScreen() {
       return;
     }
     await Linking.openURL(result.url);
-  };
+  }
 
   return (
     <KeyboardAvoidingView style={[styles.screen, { backgroundColor: colors.background }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -101,14 +233,37 @@ export default function AdminScreen() {
   );
 }
 
+function createWorkOrderIdempotencyKey() {
+  return `work-order-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1 }, locked: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30 }, lockedTitle: { color: '#17202A', fontFamily: 'Inter_700Bold', fontSize: 18, marginTop: 14 }, lockedBody: { color: '#718096', fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 7 }, backButton: { marginTop: 18, paddingHorizontal: 18, height: 40, borderRadius: 11, backgroundColor: '#2455D6', justifyContent: 'center' }, backButtonText: { color: '#FFFFFF', fontFamily: 'Inter_700Bold', fontSize: 12 },
+  disabled: { opacity: 0.65 },
   topBar: { paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22 }, iconButton: { width: 42, height: 42, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#DCE2EB', alignItems: 'center', justifyContent: 'center' }, screenTitle: { color: '#17202A', fontFamily: 'Inter_700Bold', fontSize: 20 }, pressed: { opacity: 0.78 },
   adminHero: { marginHorizontal: 20, padding: 17, borderRadius: 18, backgroundColor: '#17202A', flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 12 }, adminIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: '#2455D6', alignItems: 'center', justifyContent: 'center' }, adminTitle: { color: '#FFFFFF', fontFamily: 'Inter_700Bold', fontSize: 15 }, adminBody: { color: '#B8C2D3', fontFamily: 'Inter_400Regular', fontSize: 12, lineHeight: 17, marginTop: 3 },
   businessCard: { marginHorizontal: 20, padding: 14, backgroundColor: '#EAF0FF', borderRadius: 15, marginBottom: 26 }, businessHeader: { flexDirection: 'row', alignItems: 'center', gap: 7 }, businessName: { color: '#1B3B9E', fontFamily: 'Inter_700Bold', fontSize: 13 }, businessCopy: { color: '#3653A2', fontFamily: 'Inter_500Medium', fontSize: 11, marginTop: 4 }, businessSpecialties: { color: '#3653A2', fontFamily: 'Inter_400Regular', fontSize: 10, lineHeight: 15, marginTop: 8 },
   sectionLabel: { marginLeft: 20, color: '#718096', fontFamily: 'Inter_700Bold', fontSize: 11, letterSpacing: 1.2 }, importCard: { marginHorizontal: 20, marginTop: 10, padding: 15, borderRadius: 17, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#DCE2EB' }, fieldLabel: { color: '#526174', fontFamily: 'Inter_700Bold', fontSize: 11, marginTop: 3, marginBottom: 6 }, input: { height: 42, borderRadius: 11, backgroundColor: '#F6F7F9', paddingHorizontal: 12, color: '#17202A', fontFamily: 'Inter_400Regular', fontSize: 13, marginBottom: 10 }, importButton: { height: 44, borderRadius: 12, backgroundColor: '#2455D6', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, marginTop: 2 }, importButtonText: { color: '#FFFFFF', fontFamily: 'Inter_700Bold', fontSize: 12 },
   sectionHeader: { marginTop: 28, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, profileCount: { marginRight: 20, color: '#8B97A8', fontFamily: 'Inter_500Medium', fontSize: 11 }, profileRow: { marginHorizontal: 20, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#DCE2EB', borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8 }, profileDot: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, profileCopy: { flex: 1 }, profileName: { color: '#17202A', fontFamily: 'Inter_700Bold', fontSize: 13 }, profileMeta: { color: '#8B97A8', fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 3 }, masterLabel: { color: '#2455D6', fontFamily: 'Inter_700Bold', fontSize: 9, letterSpacing: 0.7 }, deleteButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }, adminNote: { marginHorizontal: 20, marginTop: 18, padding: 12, borderRadius: 13, backgroundColor: '#EAF0FF', flexDirection: 'row', gap: 8, alignItems: 'flex-start' }, adminNoteText: { color: '#3653A2', fontFamily: 'Inter_500Medium', fontSize: 11, lineHeight: 16, flex: 1 },
   queueMessage: { marginHorizontal: 20, marginBottom: 12, color: '#2455D6', fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+  refreshText: { marginRight: 20, color: '#2455D6', fontFamily: 'Inter_700Bold', fontSize: 10 },
+  choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
+  choiceButton: { minWidth: '46%', flexGrow: 1, padding: 10, borderRadius: 11, backgroundColor: '#F6F7F9', borderWidth: 1, borderColor: '#E3E7EE' },
+  choiceButtonActive: { backgroundColor: '#EAF0FF', borderColor: '#2455D6' },
+  choiceText: { color: '#233043', fontFamily: 'Inter_700Bold', fontSize: 11 },
+  choiceTextActive: { color: '#2455D6' },
+  choiceMeta: { color: '#8B97A8', fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 3 },
+  emptyInline: { color: '#8B97A8', fontFamily: 'Inter_400Regular', fontSize: 11, marginBottom: 8 },
+  statusChoiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
+  statusChoice: { paddingHorizontal: 9, paddingVertical: 8, borderRadius: 10, backgroundColor: '#F6F7F9', borderWidth: 1, borderColor: '#E3E7EE' },
+  statusChoiceActive: { backgroundColor: '#EAF0FF', borderColor: '#2455D6' },
+  statusChoiceText: { color: '#526174', fontFamily: 'Inter_600SemiBold', fontSize: 10 },
+  statusChoiceTextActive: { color: '#2455D6' },
+  twoColumn: { flexDirection: 'row', gap: 8 },
+  column: { flex: 1 },
+  multilineInput: { minHeight: 76, borderRadius: 11, backgroundColor: '#F6F7F9', padding: 11, color: '#17202A', fontFamily: 'Inter_400Regular', fontSize: 12, textAlignVertical: 'top', marginBottom: 10 },
+  approvalToggle: { flexDirection: 'row', gap: 8, alignItems: 'center', paddingVertical: 8, marginBottom: 8 },
+  approvalText: { color: '#3653A2', fontFamily: 'Inter_600SemiBold', fontSize: 11 },
   emptyQueue: { marginHorizontal: 20, backgroundColor: '#FFFFFF', borderRadius: 17, padding: 22, borderWidth: 1, borderColor: '#DCE2EB' }, emptyQueueTitle: { color: '#17202A', fontFamily: 'Inter_700Bold', fontSize: 14, marginTop: 12 }, emptyQueueBody: { color: '#718096', fontFamily: 'Inter_400Regular', fontSize: 12, marginTop: 5 },
   reviewCard: { marginHorizontal: 20, marginBottom: 12, padding: 15, backgroundColor: '#FFFFFF', borderRadius: 17, borderWidth: 1, borderColor: '#DCE2EB' }, reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 }, reviewVehicle: { color: '#17202A', fontFamily: 'Inter_700Bold', fontSize: 14, flex: 1 }, reviewStatus: { color: '#2455D6', fontFamily: 'Inter_700Bold', fontSize: 10, textTransform: 'uppercase' }, reviewCustomer: { color: '#526174', fontFamily: 'Inter_600SemiBold', fontSize: 11, marginTop: 7 }, reviewVin: { color: '#8B97A8', fontFamily: 'Inter_500Medium', fontSize: 10, marginTop: 4 }, reviewQuestion: { color: '#233043', fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 18, marginTop: 13 }, reviewPricing: { color: '#526174', fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16, marginTop: 8 }, responseInput: { minHeight: 88, backgroundColor: '#F6F7F9', borderRadius: 11, padding: 11, color: '#17202A', fontFamily: 'Inter_400Regular', fontSize: 12, textAlignVertical: 'top', marginTop: 13 }, reviewActions: { flexDirection: 'row', gap: 8, marginTop: 10 }, secondaryAction: { flex: 1, height: 40, borderRadius: 11, borderWidth: 1, borderColor: '#B6C8F9', alignItems: 'center', justifyContent: 'center' }, secondaryActionText: { color: '#2455D6', fontFamily: 'Inter_700Bold', fontSize: 11 },
   attachmentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 12 }, attachmentButton: { flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 9, paddingHorizontal: 9, height: 30, backgroundColor: '#EAF0FF' }, attachmentText: { color: '#2455D6', fontFamily: 'Inter_700Bold', fontSize: 10 },

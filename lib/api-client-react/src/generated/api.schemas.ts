@@ -213,6 +213,7 @@ export const ShopWorkOrderStatus = {
 
 export interface ShopWorkOrder {
   id: string;
+  customerId: string;
   vehicleId: string;
   vehicle: string;
   plate: string;
@@ -281,6 +282,7 @@ export const ShopWorkOrderUpdateStatus = {
 } as const;
 
 export interface ShopWorkOrderUpdate {
+  service?: string;
   status?: ShopWorkOrderUpdateStatus;
   /**
      * @minimum 0
@@ -292,6 +294,43 @@ export interface ShopWorkOrderUpdate {
   note?: string;
   estimate?: string;
   approved?: boolean;
+}
+
+export type ShopWorkOrderCreateStatus = typeof ShopWorkOrderCreateStatus[keyof typeof ShopWorkOrderCreateStatus];
+
+
+export const ShopWorkOrderCreateStatus = {
+  In_progress: 'In progress',
+  Awaiting_approval: 'Awaiting approval',
+  Ready_for_pickup: 'Ready for pickup',
+} as const;
+
+export interface ShopWorkOrderCreate {
+  customerId: string;
+  vehicleId: string;
+  /** @minLength 1 */
+  service: string;
+  status?: ShopWorkOrderCreateStatus;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  progress?: number;
+  eta: string;
+  technician: string;
+  note: string;
+  estimate: string;
+  approved?: boolean;
+}
+
+export type ShopStaffCustomer = ShopUser & {
+  vehicles: ShopVehicle[];
+};
+
+export interface ShopWorkOrderCustomer {
+  id: string;
+  name: string;
+  email: string;
 }
 
 export interface GalleryUploadUrlRequest {
@@ -364,15 +403,28 @@ export type ApproveShopWorkOrder200 = {
   workOrder: ShopWorkOrder;
 };
 
-export type ListShopStaffWorkOrders200WorkOrdersItemCustomer = ShopUser & {
-  readonly role?: unknown;
+export type CreateShopWorkOrder200WorkOrder = ShopWorkOrder & {
+  customer: ShopStaffCustomer;
+};
+
+export type CreateShopWorkOrder200 = {
+  workOrder: CreateShopWorkOrder200WorkOrder;
+};
+
+export type CreateShopWorkOrder201WorkOrder = ShopWorkOrder & {
+  customer: ShopStaffCustomer;
+};
+
+export type CreateShopWorkOrder201 = {
+  workOrder: CreateShopWorkOrder201WorkOrder;
 };
 
 export type ListShopStaffWorkOrders200WorkOrdersItem = ShopWorkOrder & {
-  customer: ListShopStaffWorkOrders200WorkOrdersItemCustomer;
+  customer: ShopWorkOrderCustomer;
 };
 
 export type ListShopStaffWorkOrders200 = {
   workOrders: ListShopStaffWorkOrders200WorkOrdersItem[];
+  customers?: ShopStaffCustomer[];
 };
 

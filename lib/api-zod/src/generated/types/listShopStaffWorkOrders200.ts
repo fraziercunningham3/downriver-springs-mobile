@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ListShopStaffWorkOrders200WorkOrdersItem } from './listShopStaffWorkOrders200WorkOrdersItem';
+import type { ShopStaffCustomer } from './shopStaffCustomer';
 
 export type ListShopStaffWorkOrders200 = {
   workOrders: ListShopStaffWorkOrders200WorkOrdersItem[];
+  customers?: ShopStaffCustomer[];
 };

@@ -239,6 +239,66 @@ paths:
         "404":
           description: Work order not found
   /shop/staff/work-orders:
+    post:
+      operationId: createShopWorkOrder
+      tags: [shop]
+      summary: Create and assign a work order to a customer vehicle
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Reuse this key when retrying one staff assignment to avoid creating a duplicate work order.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 120
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShopWorkOrderCreate"
+      responses:
+        "200":
+          description: Existing work order returned for a repeated assignment request
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    allOf:
+                      - $ref: "#/components/schemas/ShopWorkOrder"
+                      - type: object
+                        required: [customer]
+                        properties:
+                          customer:
+                            $ref: "#/components/schemas/ShopStaffCustomer"
+        "201":
+          description: Created work order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    allOf:
+                      - $ref: "#/components/schemas/ShopWorkOrder"
+                      - type: object
+                        required: [customer]
+                        properties:
+                          customer:
+                            $ref: "#/components/schemas/ShopStaffCustomer"
+        "400":
+          description: Invalid work-order details or customer vehicle assignment
+        "401":
+          description: Missing or invalid staff session
+        "404":
+          description: Customer not found
     get:
       operationId: listShopStaffWorkOrders
       tags: [shop]
@@ -263,13 +323,11 @@ paths:
                           required: [customer]
                           properties:
                             customer:
-                              allOf:
-                                - $ref: "#/components/schemas/ShopUser"
-                                - type: object
-                                  required: [id, name, email]
-                                  properties:
-                                    role:
-                                      readOnly: true
+                              $ref: "#/components/schemas/ShopWorkOrderCustomer"
+                  customers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ShopStaffCustomer"
         "401":
           description: Missing or invalid staff session
   /gallery:
@@ -656,10 +714,13 @@ components:
           type: string
     ShopWorkOrder:
       type: object
-      required: [id, vehicleId, vehicle, plate, status, updatedAt, service, progress, eta, technician, note, estimate, approved]
+      required: [id, customerId, vehicleId, vehicle, plate, status, updatedAt, service, progress, eta, technician, note, estimate, approved]
       properties:
         id:
           type: string
+        customerId:
+          type: string
+          format: uuid
         vehicleId:
           type: string
           format: uuid
@@ -768,6 +829,8 @@ components:
       type: object
       minProperties: 1
       properties:
+        service:
+          type: string
         status:
           type: string
           enum: [In progress, Awaiting approval, Ready for pickup]
@@ -785,6 +848,58 @@ components:
           type: string
         approved:
           type: boolean
+    ShopWorkOrderCreate:
+      type: object
+      required: [customerId, vehicleId, service, eta, technician, note, estimate]
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        vehicleId:
+          type: string
+          format: uuid
+        service:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [In progress, Awaiting approval, Ready for pickup]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        eta:
+          type: string
+        technician:
+          type: string
+        note:
+          type: string
+        estimate:
+          type: string
+        approved:
+          type: boolean
+    ShopStaffCustomer:
+      allOf:
+        - $ref: "#/components/schemas/ShopUser"
+        - type: object
+          required: [vehicles]
+          properties:
+            vehicles:
+              type: array
+              items:
+                $ref: "#/components/schemas/ShopVehicle"
+    ShopWorkOrderCustomer:
+      type: object
+      required: [id, name, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
     GalleryUploadUrlRequest:
       type: object
       required: [name, size, contentType]

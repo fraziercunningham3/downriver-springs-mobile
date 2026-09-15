@@ -5,9 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { ListShopStaffWorkOrders200WorkOrdersItemCustomer } from './listShopStaffWorkOrders200WorkOrdersItemCustomer';
 import type { ShopWorkOrder } from './shopWorkOrder';
+import type { ShopWorkOrderCustomer } from './shopWorkOrderCustomer';
 
 export type ListShopStaffWorkOrders200WorkOrdersItem = ShopWorkOrder & {
-  customer: ListShopStaffWorkOrders200WorkOrdersItemCustomer;
+  customer: ShopWorkOrderCustomer;
 };

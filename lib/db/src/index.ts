@@ -17,6 +17,7 @@ export * from "./schema";
 export {
   expertReviewRequests,
   galleryUploads,
+  shopSessions,
   shopUsers,
   shopVehicles,
   shopWorkOrders,

@@ -1,9 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getThumbnailAsync } from 'expo-video-thumbnails';
 import { identifyRevenueCatUser, resetRevenueCatUser } from '@/lib/revenuecat';
 import { Platform } from 'react-native';
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createGalleryUpload,
   deleteGalleryUpload,
@@ -11,6 +12,14 @@ import {
   requestGalleryUploadUrl,
   type GalleryUpload as ApiGalleryUpload,
 } from '@workspace/api-client-react';
+import {
+  clearShopCache,
+  getShopCacheKey,
+  isExpiredShopToken,
+  loadShopCache,
+  saveShopCache as saveAccountShopCache,
+} from '@/lib/shopSessionState';
+import { upsertWorkOrder } from '@/lib/workOrderState';
 
 export type MediaKind = 'photo' | 'video';
 export type InspectionComponent = 'Engine' | 'Mounts' | 'Leaks' | 'Wiring' | 'Exhaust';
@@ -43,6 +52,8 @@ export type WorkOrderStatus = 'In progress' | 'Awaiting approval' | 'Ready for p
 
 export type WorkOrder = {
   id: string;
+  customerId: string;
+  vehicleId: string;
   vehicle: string;
   plate: string;
   status: WorkOrderStatus;
@@ -70,6 +81,18 @@ export type ShopVehicle = {
   plate: string;
 };
 
+export type ShopSession = {
+  id: string;
+  deviceName: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  current: boolean;
+};
+
+export type StaffCustomer = ShopUser & {
+  vehicles: ShopVehicle[];
+};
 export type ShopSyncState = 'idle' | 'syncing' | 'offline' | 'error';
 
 export type Profile = {
@@ -128,7 +151,10 @@ type AppContextValue = {
   cancelInspection: () => void;
   shopUser: ShopUser | null;
   shopToken: string | null;
+  shopSessions: ShopSession[];
   shopVehicles: ShopVehicle[];
+  staffCustomers: StaffCustomer[];
+  staffWorkOrders: StaffWorkOrder[];
   shopSyncState: ShopSyncState;
   shopError: string | null;
   lastShopSyncAt: string | null;
@@ -143,6 +169,12 @@ type AppContextValue = {
   }) => Promise<Inspection>;
   approveWorkOrder: (id: string) => Promise<void>;
   refreshWorkOrders: () => Promise<void>;
+  refreshStaffWorkOrders: () => Promise<void>;
+  refreshShopSessions: () => Promise<void>;
+  revokeShopSession: (sessionId: string) => Promise<void>;
+  revokeAllShopSessions: () => Promise<void>;
+  createStaffWorkOrder: (input: StaffWorkOrderInput, idempotencyKey?: string) => Promise<StaffWorkOrder>;
+  updateStaffWorkOrder: (id: string, input: Partial<Omit<StaffWorkOrderInput, 'customerId' | 'vehicleId'>>) => Promise<StaffWorkOrder>;
   signInShopCustomer: (input: { email: string; password: string }) => Promise<void>;
   registerShopCustomer: (input: { name: string; email: string; phone: string; password: string; vehicle?: string; plate?: string }) => Promise<void>;
   completeShopProfile: (input: { name: string; email: string; phone: string }) => Promise<void>;
@@ -159,10 +191,47 @@ type AppContextValue = {
 
 const STORAGE_KEY = 'downriver-springs-app-state';
 const SHOP_AUTH_KEY = 'downriver-springs-shop-auth';
-const SHOP_CACHE_PREFIX = 'downriver-springs-shop-cache:';
-
 const DEVICE_ID_KEY = 'downriver-springs-analysis-device-id';
 const seededInspections: Inspection[] = [];
+
+function getShopDeviceName() {
+  return Platform.OS === 'web' ? 'Web browser' : `${Platform.OS === 'ios' ? 'iOS' : 'Android'} app`;
+}
+
+async function getStoredShopAuth() {
+  try {
+    const secureValue = await SecureStore.getItemAsync(SHOP_AUTH_KEY);
+    if (secureValue) return secureValue;
+  } catch {
+    // SecureStore is unavailable on some web/browser runtimes.
+  }
+  const legacyValue = await AsyncStorage.getItem(SHOP_AUTH_KEY);
+  if (legacyValue) {
+    try {
+      await SecureStore.setItemAsync(SHOP_AUTH_KEY, legacyValue);
+      await AsyncStorage.removeItem(SHOP_AUTH_KEY);
+    } catch {
+      // Keep the legacy value available when platform secure storage is unavailable.
+    }
+  }
+  return legacyValue;
+}
+
+async function setStoredShopAuth(value: string) {
+  try {
+    await SecureStore.setItemAsync(SHOP_AUTH_KEY, value);
+    await AsyncStorage.removeItem(SHOP_AUTH_KEY);
+  } catch {
+    await AsyncStorage.setItem(SHOP_AUTH_KEY, value);
+  }
+}
+
+async function removeStoredShopAuth() {
+  await Promise.all([
+    SecureStore.deleteItemAsync(SHOP_AUTH_KEY).catch(() => undefined),
+    AsyncStorage.removeItem(SHOP_AUTH_KEY).catch(() => undefined),
+  ]);
+}
 
 function createDeviceId() {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 18)}`;
@@ -235,15 +304,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [analysisStage, setAnalysisStage] = useState<'preparing' | 'analyzing' | null>(null);
   const inspectionAbortControllerRef = useRef<AbortController | null>(null);
   const [shopToken, setShopToken] = useState<string | null>(null);
+  const [shopSessionId, setShopSessionId] = useState<string | null>(null);
   const [shopUser, setShopUser] = useState<ShopUser | null>(null);
   const [shopVehicles, setShopVehicles] = useState<ShopVehicle[]>([]);
+  const [shopSessions, setShopSessions] = useState<ShopSession[]>([]);
+  const [staffCustomers, setStaffCustomers] = useState<StaffCustomer[]>([]);
+  const [staffWorkOrders, setStaffWorkOrders] = useState<StaffWorkOrder[]>([]);
   const [shopSyncState, setShopSyncState] = useState<ShopSyncState>('idle');
   const [shopError, setShopError] = useState<string | null>(null);
   const [lastShopSyncAt, setLastShopSyncAt] = useState<string | null>(null);
   const [shopAuthLoading, setShopAuthLoading] = useState(false);
 
+  const clearShopSession = useCallback(async (userId?: string) => {
+    await resetRevenueCatUser().catch(() => undefined);
+    setShopToken(null);
+    setShopSessionId(null);
+    setShopUser(null);
+    setShopVehicles([]);
+    setShopSessions([]);
+    setWorkOrders([]);
+    setStaffCustomers([]);
+    setStaffWorkOrders([]);
+    setShopSyncState('idle');
+    setShopError(null);
+    setLastShopSyncAt(null);
+    setGalleryUploads((current) => current.filter((item) => !item.remote || item.ownerId !== userId));
+    await removeStoredShopAuth();
+    if (userId) await clearShopCache(AsyncStorage, userId);
+  }, []);
+
   useEffect(() => {
-    Promise.all([AsyncStorage.getItem(STORAGE_KEY), AsyncStorage.getItem(SHOP_AUTH_KEY)])
+    Promise.all([AsyncStorage.getItem(STORAGE_KEY), getStoredShopAuth()])
       .then(async ([raw, authRaw]) => {
         if (raw) {
           const parsed = JSON.parse(raw) as Partial<{
@@ -281,25 +372,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (authRaw) {
           const auth = JSON.parse(authRaw) as {
             token?: string;
+            sessionId?: string;
             user?: ShopUser;
             vehicles?: ShopVehicle[];
           };
-          if (auth.token && auth.user?.id && (auth.user.role === 'customer' || auth.user.role === 'staff')) {
+          if (auth.token && auth.sessionId && auth.user?.id && (auth.user.role === 'customer' || auth.user.role === 'staff')) {
+            if (isExpiredShopToken(auth.token)) {
+              await removeStoredShopAuth();
+              await AsyncStorage.removeItem(getShopCacheKey(auth.user.id));
+              setGalleryUploads((current) => current.filter((item) => !item.remote || item.ownerId !== auth.user?.id));
+              setShopError('Your shop session expired. Sign in again.');
+              return;
+            }
             setShopToken(auth.token);
+            setShopSessionId(auth.sessionId ?? null);
             setShopUser(auth.user);
             identifyRevenueCatUser(auth.user.id).catch(() => undefined);
+            setGalleryUploads((current) => current.filter((item) => !item.remote || item.ownerId === auth.user?.id));
             setShopVehicles(auth.vehicles ?? []);
-            const cached = await AsyncStorage.getItem(`${SHOP_CACHE_PREFIX}${auth.user.id}`);
+            const cached = await loadShopCache<ShopVehicle, WorkOrder>(AsyncStorage, auth.user.id);
             if (cached) {
-              const parsedCache = JSON.parse(cached) as {
-                vehicles?: ShopVehicle[];
-                workOrders?: WorkOrder[];
-                syncedAt?: string;
-              };
-              setShopVehicles(parsedCache.vehicles ?? auth.vehicles ?? []);
-              setWorkOrders(parsedCache.workOrders ?? []);
-              setLastShopSyncAt(parsedCache.syncedAt ?? null);
+              setShopVehicles(cached.vehicles);
+              setWorkOrders(cached.workOrders);
+              setLastShopSyncAt(cached.syncedAt);
             }
+          } else if (auth.user?.id) {
+            await removeStoredShopAuth();
+            await clearShopCache(AsyncStorage, auth.user.id);
+            setGalleryUploads((current) => current.filter((item) => !item.remote || item.ownerId !== auth.user?.id));
           }
         }
       })
@@ -311,26 +411,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!isHydrated || !shopToken || !shopUser) return;
     let active = true;
     setShopSyncState('syncing');
-    fetchShopDashboard(shopToken)
+    const syncPromise = shopUser.role === 'staff'
+      ? fetchStaffWorkspace(shopToken)
+      : fetchShopDashboard(shopToken);
+    syncPromise
       .then(async (dashboard) => {
         if (!active) return;
         const syncedAt = new Date().toISOString();
-        setShopVehicles(dashboard.vehicles);
-        setWorkOrders(dashboard.workOrders);
+        if (shopUser.role === 'staff') {
+          const workspace = dashboard as StaffWorkspaceResponse;
+          setStaffCustomers(workspace.customers);
+          setStaffWorkOrders(workspace.workOrders);
+          setShopVehicles([]);
+          setWorkOrders([]);
+        } else {
+          const customerDashboard = dashboard as ShopDashboardResponse;
+          setShopVehicles(customerDashboard.vehicles);
+          setWorkOrders(customerDashboard.workOrders);
+          setStaffCustomers([]);
+          setStaffWorkOrders([]);
+        }
         setLastShopSyncAt(syncedAt);
         setShopSyncState('idle');
         setShopError(null);
-        await saveShopCache(shopUser.id, dashboard.vehicles, dashboard.workOrders, syncedAt);
+        if (shopUser.role === 'customer') {
+          const customerDashboard = dashboard as ShopDashboardResponse;
+          await saveShopCache(shopUser.id, customerDashboard.vehicles, customerDashboard.workOrders, syncedAt);
+        }
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         if (!active) return;
         if (error instanceof ShopRequestError && error.status === 401) {
+          await clearShopSession(shopUser.id);
           setShopError('Your shop session expired. Sign in again to see current updates.');
-          setShopToken(null);
-          setShopUser(null);
-          setShopVehicles([]);
-          setWorkOrders([]);
-          AsyncStorage.removeItem(SHOP_AUTH_KEY).catch(() => undefined);
         } else {
           setShopSyncState('offline');
           setShopError('We could not reach the service desk. Showing your last saved updates.');
@@ -339,7 +452,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [isHydrated, shopToken, shopUser]);
+  }, [clearShopSession, isHydrated, shopToken, shopUser]);
+
+  useEffect(() => {
+    if (!isHydrated || !shopToken || !shopUser) return;
+    let active = true;
+    fetchShopSessions(shopToken)
+      .then((result) => {
+        if (active) setShopSessions(result.sessions);
+      })
+      .catch(async (error: unknown) => {
+        if (active && error instanceof ShopRequestError && error.status === 401) {
+          await clearShopSession(shopUser.id);
+          setShopError('Your shop session expired. Sign in again.');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [clearShopSession, isHydrated, shopToken, shopUser]);
 
   useEffect(() => {
     if (!isHydrated || !shopToken || !shopUser) return;
@@ -355,11 +486,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return [...hydratedUploads, ...localOnly];
         });
       })
-      .catch(() => undefined);
+      .catch(async (error: unknown) => {
+        if (error instanceof ShopRequestError && error.status === 401) {
+          await clearShopSession(shopUser.id);
+          setShopError('Your shop session expired. Sign in again.');
+        }
+      });
     return () => {
       active = false;
     };
-  }, [isHydrated, shopToken, shopUser]);
+  }, [clearShopSession, isHydrated, shopToken, shopUser]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -381,7 +517,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       cancelInspection: () => inspectionAbortControllerRef.current?.abort(),
       shopUser,
       shopToken,
+      shopSessions,
       shopVehicles,
+      staffCustomers,
+      staffWorkOrders,
       shopSyncState,
       shopError,
       lastShopSyncAt,
@@ -470,6 +609,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setShopSyncState('idle');
           await saveShopCache(shopUser.id, shopVehicles, workOrders.map((order) => order.id === id ? result.workOrder : order), syncedAt);
         } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
           setShopSyncState(error instanceof ShopRequestError && (error.status === 0 || error.status >= 500) ? 'offline' : 'error');
           setShopError('This approval could not be saved. Your last known updates are still available.');
           throw error;
@@ -488,8 +631,126 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setShopSyncState('idle');
           await saveShopCache(shopUser.id, dashboard.vehicles, dashboard.workOrders, syncedAt);
         } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
           setShopSyncState(error instanceof ShopRequestError && (error.status === 0 || error.status >= 500) ? 'offline' : 'error');
           setShopError('We could not reach the service desk. Showing your last saved updates.');
+          throw error;
+        }
+      },
+      refreshStaffWorkOrders: async () => {
+        if (!shopToken || shopUser?.role !== 'staff') return;
+        setShopSyncState('syncing');
+        setShopError(null);
+        try {
+          const workspace = await fetchStaffWorkspace(shopToken);
+          const syncedAt = new Date().toISOString();
+          setStaffCustomers(workspace.customers);
+          setStaffWorkOrders(workspace.workOrders);
+          setLastShopSyncAt(syncedAt);
+          setShopSyncState('idle');
+        } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
+          setShopSyncState(error instanceof ShopRequestError && (error.status === 0 || error.status >= 500) ? 'offline' : 'error');
+          setShopError('We could not reach the service desk. Showing the last loaded staff queue.');
+          throw error;
+        }
+      },
+      refreshShopSessions: async () => {
+        if (!shopToken || !shopUser) return;
+        const result = await fetchShopSessions(shopToken);
+        setShopSessions(result.sessions);
+      },
+      revokeShopSession: async (sessionId) => {
+        if (!shopToken || !shopUser) return;
+        try {
+          const response = await fetch(`${API_BASE_URL}/shop/auth/sessions/${encodeURIComponent(sessionId)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${shopToken}` },
+          });
+          const result = await readShopResponse<{ revoked: boolean; current: boolean }>(response);
+          if (result.current || sessionId === shopSessionId) {
+            await clearShopSession(shopUser.id);
+            return;
+          }
+          setShopSessions((current) => current.filter((session) => session.id !== sessionId));
+        } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
+          throw error;
+        }
+      },
+      revokeAllShopSessions: async () => {
+        if (!shopToken || !shopUser) return;
+        try {
+          const response = await fetch(`${API_BASE_URL}/shop/auth/sessions/revoke-all`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${shopToken}` },
+          });
+          await readShopResponse<{ revokedCount: number }>(response);
+          await clearShopSession(shopUser.id);
+        } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
+          throw error;
+        }
+      },
+      createStaffWorkOrder: async (input, idempotencyKey) => {
+        if (!shopToken || shopUser?.role !== 'staff') throw new Error('Sign in as staff to create a work order.');
+        setShopSyncState('syncing');
+        setShopError(null);
+        try {
+          const response = await fetch(`${API_BASE_URL}/shop/staff/work-orders`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${shopToken}`,
+              ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+            },
+            body: JSON.stringify(input),
+          });
+          const result = await readShopResponse<{ workOrder: StaffWorkOrder }>(response);
+          setStaffWorkOrders((current) => upsertWorkOrder(current, result.workOrder));
+          setLastShopSyncAt(new Date().toISOString());
+          setShopSyncState('idle');
+          return result.workOrder;
+        } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
+          setShopSyncState(error instanceof ShopRequestError && (error.status === 0 || error.status >= 500) ? 'offline' : 'error');
+          setShopError(error instanceof Error ? error.message : 'We could not create this work order.');
+          throw error;
+        }
+      },
+      updateStaffWorkOrder: async (id, input) => {
+        if (!shopToken || shopUser?.role !== 'staff') throw new Error('Sign in as staff to update a work order.');
+        setShopSyncState('syncing');
+        setShopError(null);
+        try {
+          const response = await fetch(`${API_BASE_URL}/shop/staff/work-orders/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shopToken}` },
+            body: JSON.stringify(input),
+          });
+          const result = await readShopResponse<{ workOrder: StaffWorkOrder }>(response);
+          setStaffWorkOrders((current) => current.map((order) => order.id === id ? result.workOrder : order));
+          setLastShopSyncAt(new Date().toISOString());
+          setShopSyncState('idle');
+          return result.workOrder;
+        } catch (error) {
+          setShopSyncState(error instanceof ShopRequestError && (error.status === 0 || error.status >= 500) ? 'offline' : 'error');
+          setShopError(error instanceof Error ? error.message : 'We could not save this work order.');
           throw error;
         }
       },
@@ -497,16 +758,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setShopAuthLoading(true);
         setShopError(null);
         try {
-          const result = await requestShopAuth('/shop/auth/sign-in', { email: email.trim(), password });
+          const result = await requestShopAuth('/shop/auth/sign-in', {
+            email: email.trim(),
+            password,
+            deviceName: getShopDeviceName(),
+          });
           setShopToken(result.token);
+          setShopSessionId(result.sessionId);
           setShopUser(result.user);
           await identifyRevenueCatUser(result.user.id);
           setShopVehicles(result.user.role === 'customer' ? result.vehicles : []);
           setWorkOrders(result.user.role === 'customer' ? result.workOrders : []);
+           setStaffCustomers([]);
+           setStaffWorkOrders([]);
           setShopSyncState('idle');
           const syncedAt = new Date().toISOString();
           setLastShopSyncAt(syncedAt);
-          await AsyncStorage.setItem(SHOP_AUTH_KEY, JSON.stringify({ token: result.token, user: result.user, vehicles: result.vehicles }));
+           await setStoredShopAuth(JSON.stringify({ token: result.token, sessionId: result.sessionId, user: result.user, vehicles: result.vehicles }));
           await saveShopCache(result.user.id, result.vehicles, result.workOrders, syncedAt);
         } catch (error) {
           setShopSyncState('error');
@@ -525,11 +793,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             email: email.trim(),
             phone: phone.trim(),
             password,
+            deviceName: getShopDeviceName(),
             ...(vehicle?.trim() && plate?.trim()
               ? { vehicle: { label: vehicle.trim(), plate: plate.trim() } }
               : {}),
           });
           setShopToken(result.token);
+          setShopSessionId(result.sessionId);
           setShopUser(result.user);
           await identifyRevenueCatUser(result.user.id);
           setShopVehicles(result.vehicles);
@@ -537,7 +807,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setShopSyncState('idle');
           const syncedAt = new Date().toISOString();
           setLastShopSyncAt(syncedAt);
-          await AsyncStorage.setItem(SHOP_AUTH_KEY, JSON.stringify({ token: result.token, user: result.user, vehicles: result.vehicles }));
+          await setStoredShopAuth(JSON.stringify({ token: result.token, sessionId: result.sessionId, user: result.user, vehicles: result.vehicles }));
           await saveShopCache(result.user.id, result.vehicles, result.workOrders, syncedAt);
         } catch (error) {
           setShopSyncState('error');
@@ -548,7 +818,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       },
       completeShopProfile: async ({ name, email, phone }) => {
-        if (!shopToken) throw new Error('Your account session has expired.');
+        if (!shopToken || !shopUser) throw new Error('Your account session has expired.');
         setShopAuthLoading(true);
         setShopError(null);
         try {
@@ -559,8 +829,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           });
           const result = await readShopResponse<{ user: ShopUser }>(response);
           setShopUser(result.user);
-          await AsyncStorage.setItem(SHOP_AUTH_KEY, JSON.stringify({ token: shopToken, user: result.user, vehicles: shopVehicles }));
+           await setStoredShopAuth(JSON.stringify({ token: shopToken, sessionId: shopSessionId, user: result.user, vehicles: shopVehicles }));
         } catch (error) {
+          if (error instanceof ShopRequestError && error.status === 401) {
+            await clearShopSession(shopUser.id);
+            setShopError('Your shop session expired. Sign in again.');
+          }
           setShopError(error instanceof Error ? error.message : 'We could not update your account.');
           throw error;
         } finally {
@@ -568,15 +842,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       },
       signOutShopCustomer: async () => {
-        await resetRevenueCatUser().catch(() => undefined);
-        setShopToken(null);
-        setShopUser(null);
-        setShopVehicles([]);
-        setWorkOrders([]);
-        setShopSyncState('idle');
-        setShopError(null);
-        setLastShopSyncAt(null);
-        await AsyncStorage.removeItem(SHOP_AUTH_KEY);
+        if (shopToken && shopSessionId) {
+          await fetch(`${API_BASE_URL}/shop/auth/sessions/${encodeURIComponent(shopSessionId)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${shopToken}` },
+          }).catch(() => undefined);
+        }
+        await clearShopSession(shopUser?.id);
       },
       updateActiveProfile: (updates) => {
         setProfiles((current) => current.map((profile) => profile.id === activeProfileId ? { ...profile, ...updates } : profile));
@@ -693,7 +965,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }, ...current]);
       },
     }),
-    [inspections, workOrders, profiles, posts, galleryUploads, chatMessages, activeProfileId, isHydrated, isAnalyzing, analysisStage, shopToken, shopUser, shopVehicles, shopSyncState, shopError, lastShopSyncAt, shopAuthLoading],
+    [inspections, workOrders, profiles, posts, galleryUploads, chatMessages, activeProfileId, isHydrated, isAnalyzing, analysisStage, shopToken, shopSessionId, shopUser, shopSessions, shopVehicles, staffCustomers, staffWorkOrders, shopSyncState, shopError, lastShopSyncAt, shopAuthLoading, clearShopSession],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -747,6 +1019,10 @@ type ShopDashboardResponse = {
   workOrders: WorkOrder[];
 };
 
+type StaffWorkspaceResponse = {
+  customers: StaffCustomer[];
+  workOrders: StaffWorkOrder[];
+};
 class ShopRequestError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -774,10 +1050,23 @@ async function requestShopAuth(path: string, body: Record<string, unknown>) {
   }
   return readShopResponse<{
     token: string;
+    sessionId: string;
     user: ShopUser;
     vehicles: ShopVehicle[];
     workOrders: WorkOrder[];
   }>(response);
+}
+
+async function fetchShopSessions(token: string) {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/shop/auth/sessions`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new ShopRequestError('The service desk is offline.', 0);
+  }
+  return readShopResponse<{ sessions: ShopSession[] }>(response);
 }
 
 async function fetchShopDashboard(token: string) {
@@ -792,11 +1081,19 @@ async function fetchShopDashboard(token: string) {
   return readShopResponse<ShopDashboardResponse>(response);
 }
 
+async function fetchStaffWorkspace(token: string) {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/shop/staff/work-orders`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new ShopRequestError('The service desk is offline.', 0);
+  }
+  return readShopResponse<StaffWorkspaceResponse>(response);
+}
 async function saveShopCache(userId: string, vehicles: ShopVehicle[], workOrders: WorkOrder[], syncedAt: string) {
-  await AsyncStorage.setItem(
-    `${SHOP_CACHE_PREFIX}${userId}`,
-    JSON.stringify({ vehicles, workOrders, syncedAt }),
-  );
+  await saveAccountShopCache(AsyncStorage, userId, vehicles, workOrders, syncedAt);
 }
 
 async function requestAnalysis(token: string, body: string, signal: AbortSignal) {
@@ -977,3 +1274,20 @@ function assertNotAborted(signal: AbortSignal) {
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError';
 }
+
+export type StaffWorkOrder = WorkOrder & {
+  customer: Pick<ShopUser, 'id' | 'name' | 'email'> | null;
+};
+
+export type StaffWorkOrderInput = {
+  customerId: string;
+  vehicleId: string;
+  service: string;
+  status: WorkOrderStatus;
+  progress: number;
+  eta: string;
+  technician: string;
+  note: string;
+  estimate: string;
+  approved: boolean;
+};

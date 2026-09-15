@@ -21,6 +21,8 @@ import type {
 
 import type {
   ApproveShopWorkOrder200,
+  CreateShopWorkOrder200,
+  CreateShopWorkOrder201,
   GalleryCreateRequest,
   GalleryListResponse,
   GalleryUploadResponse,
@@ -37,6 +39,7 @@ import type {
   ShopRegisterRequest,
   ShopSignInRequest,
   ShopStaffBootstrapRequest,
+  ShopWorkOrderCreate,
   ShopWorkOrderUpdate,
   VehicleChatRequest,
   VehicleChatResponse
@@ -913,6 +916,94 @@ export const useUpdateShopWorkOrder = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getUpdateShopWorkOrderMutationOptions(options));
+    }
+
+export const getCreateShopWorkOrderUrl = () => {
+
+
+
+
+  return `/api/shop/staff/work-orders`
+}
+
+/**
+ * @summary Create and assign a work order to a customer vehicle
+ */
+export const createShopWorkOrder = async (shopWorkOrderCreate: ShopWorkOrderCreate, options?: Parameters<typeof customFetch>[1]): Promise<CreateShopWorkOrder200 | CreateShopWorkOrder201> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<CreateShopWorkOrder200 | CreateShopWorkOrder201>(getCreateShopWorkOrderUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(shopWorkOrderCreate)
+  }
+);}
+
+
+
+
+
+export const getCreateShopWorkOrderMutationKey = () => ['createShopWorkOrder'] as const;
+
+export const getCreateShopWorkOrderMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShopWorkOrder>>, TError,CreateShopWorkOrderMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createShopWorkOrder>>, TError,CreateShopWorkOrderMutationVariables, TContext> => {
+
+const mutationKey = getCreateShopWorkOrderMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createShopWorkOrder>>, CreateShopWorkOrderMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createShopWorkOrder(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateShopWorkOrderMutationResult = NonNullable<Awaited<ReturnType<typeof createShopWorkOrder>>>
+    export type CreateShopWorkOrderMutationBody = BodyType<ShopWorkOrderCreate>
+    export type CreateShopWorkOrderMutationError = ErrorType<void>
+    export type CreateShopWorkOrderMutationVariables = {data: BodyType<ShopWorkOrderCreate>}
+
+    /**
+ * @summary Create and assign a work order to a customer vehicle
+ */
+export const useCreateShopWorkOrder = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShopWorkOrder>>, TError,CreateShopWorkOrderMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createShopWorkOrder>>,
+        TError,
+        CreateShopWorkOrderMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateShopWorkOrderMutationOptions(options));
     }
 
 export const getListShopStaffWorkOrdersUrl = () => {

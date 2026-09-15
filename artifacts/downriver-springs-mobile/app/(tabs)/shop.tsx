@@ -64,6 +64,7 @@ export default function ShopScreen() {
     refreshWorkOrders,
     isHydrated,
     shopUser,
+    shopSessions,
     shopVehicles,
     shopSyncState,
     shopError,
@@ -72,6 +73,8 @@ export default function ShopScreen() {
     signInShopCustomer,
     registerShopCustomer,
     signOutShopCustomer,
+    revokeShopSession,
+    revokeAllShopSessions,
   } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<'All' | WorkOrder['status']>('All');
@@ -82,6 +85,7 @@ export default function ShopScreen() {
   const [password, setPassword] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [plate, setPlate] = useState('');
+  const [showSessions, setShowSessions] = useState(false);
   const visibleOrders = useMemo(() => filter === 'All' ? workOrders : workOrders.filter((order) => order.status === filter), [filter, workOrders]);
 
   const refresh = async () => {
@@ -117,6 +121,38 @@ export default function ShopScreen() {
 
   const shareOrder = async (order: WorkOrder) => {
     await Share.share({ message: `${order.id} · ${order.vehicle}\n${order.service}\nStatus: ${order.status}\nTechnician note: ${order.note}\nEstimate: ${order.estimate}`, title: 'Work order update' });
+  };
+
+  const confirmRevokeSession = (sessionId: string, current: boolean) => {
+    Alert.alert(
+      current ? 'Sign out this device?' : 'Revoke this device?',
+      current
+        ? 'This device will be signed out and its saved shop view will be removed.'
+        : 'This device will no longer be able to open your shop account.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: current ? 'Sign out' : 'Revoke',
+          style: 'destructive',
+          onPress: () => revokeShopSession(sessionId).catch(() => Alert.alert('Could not revoke device', 'Try again when you have a connection.')),
+        },
+      ],
+    );
+  };
+
+  const confirmRevokeAll = () => {
+    Alert.alert(
+      'Sign out all devices?',
+      'Every active shop session, including this device, will be signed out.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign out all',
+          style: 'destructive',
+          onPress: () => revokeAllShopSessions().catch(() => Alert.alert('Could not sign out devices', 'Try again when you have a connection.')),
+        },
+      ],
+    );
   };
 
   if (!isHydrated) return <View style={[styles.loading, { backgroundColor: colors.background }]}><ActivityIndicator color={colors.primary} /></View>;
@@ -186,6 +222,25 @@ export default function ShopScreen() {
         </View>
         <View style={[styles.liveBanner, shopSyncState === 'offline' && styles.offlineBanner]}><View style={[styles.livePulse, shopSyncState === 'offline' && styles.offlinePulse]} /><View style={{ flex: 1 }}><Text style={styles.liveTitle}>{shopSyncState === 'offline' ? 'Saved view is available' : 'Service desk is live'}</Text><Text style={styles.liveCopy}>{shopError ?? 'Work orders update as your technician posts progress.'}</Text></View><Text style={styles.liveTime}>{syncLabel}</Text></View>
          <Pressable testID="expert-review-entry" onPress={() => router.push('/expert-review')} style={({ pressed }) => [styles.expertButton, pressed && styles.pressed]}><View style={styles.expertIcon}><Feather name="search" size={16} color="#FFFFFF" /></View><View style={{ flex: 1 }}><Text style={styles.expertTitle}>Expert vehicle-buying review</Text><Text style={styles.expertCopy}>Send Travis a VIN, photos, video, and pricing context.</Text></View><Feather name="chevron-right" size={18} color="#2455D6" /></Pressable>
+         <View style={styles.sessionCard}>
+           <Pressable testID="shop-device-sessions-toggle" onPress={() => setShowSessions((current) => !current)} style={({ pressed }) => [styles.sessionHeader, pressed && styles.pressed]}>
+             <View style={styles.sessionIcon}><Feather name="shield" size={16} color="#2455D6" /></View>
+             <View style={{ flex: 1 }}><Text style={styles.sessionTitle}>Signed-in devices</Text><Text style={styles.sessionCopy}>Review and revoke access to your shop account.</Text></View>
+             <Feather name={showSessions ? 'chevron-up' : 'chevron-down'} size={18} color="#718096" />
+           </Pressable>
+           {showSessions ? (
+             <View style={styles.sessionPanel}>
+               {shopSessions.map((session) => (
+                 <View key={session.id} style={styles.sessionRow}>
+                   <View style={{ flex: 1 }}><Text style={styles.sessionDevice}>{session.deviceName}{session.current ? ' · This device' : ''}</Text><Text style={styles.sessionMeta}>Last active {new Date(session.lastSeenAt).toLocaleDateString()}</Text></View>
+                   <Pressable testID={`revoke-session-${session.id}`} onPress={() => confirmRevokeSession(session.id, session.current)} style={({ pressed }) => [styles.revokeButton, pressed && styles.pressed]}><Text style={styles.revokeText}>{session.current ? 'Sign out' : 'Revoke'}</Text></Pressable>
+                 </View>
+               ))}
+               {shopSessions.length === 0 ? <Text style={styles.sessionEmpty}>No other active device sessions are available.</Text> : null}
+               <Pressable testID="shop-revoke-all" onPress={confirmRevokeAll} style={({ pressed }) => [styles.revokeAllButton, pressed && styles.pressed]}><Feather name="log-out" size={15} color="#9C3B3B" /><Text style={styles.revokeAllText}>Sign out all devices</Text></Pressable>
+             </View>
+           ) : null}
+         </View>
         {shopError && shopSyncState !== 'offline' ? <View style={styles.errorBanner}><Feather name="alert-circle" size={15} color="#B54141" /><Text style={styles.errorText}>{shopError}</Text></View> : null}
         <View style={styles.summaryRow}>
           <View style={styles.summaryItem}><Text style={styles.summaryValue}>{workOrders.length}</Text><Text style={styles.summaryLabel}>Open orders</Text></View>
@@ -243,6 +298,20 @@ const styles = StyleSheet.create({
   expertIcon: { width: 31, height: 31, borderRadius: 10, backgroundColor: '#2455D6', alignItems: 'center', justifyContent: 'center' },
   expertTitle: { color: '#FFFFFF', fontFamily: 'Inter_700Bold', fontSize: 12 },
   expertCopy: { color: '#C7D0DE', fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 3 },
+  sessionCard: { marginHorizontal: 20, marginTop: 12, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#DCE2EB' },
+  sessionHeader: { minHeight: 64, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  sessionIcon: { width: 31, height: 31, borderRadius: 10, backgroundColor: '#EAF0FF', alignItems: 'center', justifyContent: 'center' },
+  sessionTitle: { color: '#233043', fontFamily: 'Inter_700Bold', fontSize: 12 },
+  sessionCopy: { color: '#718096', fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 3 },
+  sessionPanel: { borderTopWidth: 1, borderTopColor: '#EEF1F5', padding: 13 },
+  sessionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, gap: 10 },
+  sessionDevice: { color: '#233043', fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+  sessionMeta: { color: '#8B97A8', fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 3 },
+  sessionEmpty: { color: '#718096', fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16, paddingVertical: 7 },
+  revokeButton: { borderWidth: 1, borderColor: '#F0CACA', borderRadius: 9, paddingHorizontal: 9, paddingVertical: 7 },
+  revokeText: { color: '#9C3B3B', fontFamily: 'Inter_700Bold', fontSize: 10 },
+  revokeAllButton: { borderTopWidth: 1, borderTopColor: '#EEF1F5', marginTop: 7, paddingTop: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  revokeAllText: { color: '#9C3B3B', fontFamily: 'Inter_700Bold', fontSize: 11 },
   offlineBanner: { backgroundColor: '#FFF6E5', borderColor: '#F2D59D' },
   offlinePulse: { backgroundColor: '#C68A22' },
   errorBanner: { marginHorizontal: 20, marginTop: 10, backgroundColor: '#FFF0F0', borderRadius: 12, padding: 10, flexDirection: 'row', gap: 8, alignItems: 'flex-start' },

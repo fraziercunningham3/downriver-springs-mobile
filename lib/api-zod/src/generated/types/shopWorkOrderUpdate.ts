@@ -8,6 +8,7 @@
 import type { ShopWorkOrderUpdateStatus } from './shopWorkOrderUpdateStatus';
 
 export interface ShopWorkOrderUpdate {
+  service?: string;
   status?: ShopWorkOrderUpdateStatus;
   /**
      * @minimum 0

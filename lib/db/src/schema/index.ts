@@ -47,6 +47,25 @@ export const shopUsers = pgTable(
   }),
 );
 
+export const shopSessions = pgTable(
+  "shop_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => shopUsers.id, { onDelete: "cascade" }),
+    deviceName: text("device_name").notNull().default("Mobile device"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => ({
+    userIndex: index("shop_sessions_user_idx").on(table.userId),
+    activeIndex: index("shop_sessions_active_idx").on(table.userId, table.revokedAt, table.expiresAt),
+  }),
+);
+
 export const expertReviewRequests = pgTable(
   "expert_review_requests",
   {
@@ -163,6 +182,7 @@ export const insertExpertReviewRequestSchema = createInsertSchema(expertReviewRe
 });
 
 export type ShopUser = typeof shopUsers.$inferSelect;
+export type ShopSession = typeof shopSessions.$inferSelect;
 export type ShopVehicle = typeof shopVehicles.$inferSelect;
 export type ShopWorkOrder = typeof shopWorkOrders.$inferSelect;
 export type InsertShopUser = z.infer<typeof insertShopUserSchema>;
